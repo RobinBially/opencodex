@@ -696,6 +696,15 @@ const configSchema = z.object({
   // parse: a hand-edited typo must never trip the backup-and-defaults repair
   // path below and wipe providers/pool accounts. Warning emitted in loadConfig.
   streamMode: z.enum(["auto", "legacy-tee", "eager-relay"]).optional().catch(undefined),
+  remoteAccess: z.object({
+    enabled: z.boolean().optional(),
+    instanceId: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/),
+    issuer: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/),
+    publicKeys: z.array(z.object({
+      kid: z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/),
+      publicKeyPem: z.string().min(64).max(8192),
+    })).min(1).max(3),
+  }).optional(),
 }).passthrough().superRefine((config, ctx) => {
   const claudeCode = (config as { claudeCode?: unknown }).claudeCode;
   if (claudeCode !== undefined && (!claudeCode || typeof claudeCode !== "object" || Array.isArray(claudeCode))) {
