@@ -6,7 +6,7 @@
 
 기준 브랜치/커밋: `dev` / `cfc50fbb`
 
-이 문서는 다른 컴퓨터에서 작업을 바로 이어가기 위한 현재 상태의 기준 문서다. 현재 코드는 로컬 typecheck와 집중 테스트가 가능한 구현 초안이며, 실제 PostgreSQL·Cloudflare 계정·VPS를 사용한 Phase 0 및 운영 E2E는 아직 완료되지 않았다.
+이 문서는 다른 컴퓨터에서 작업을 바로 이어가기 위한 현재 상태의 기준 문서다. PostgreSQL 17과 실제 Control Plane·worker·Gateway 프로세스를 사용하는 로컬 통합 검증은 완료됐다. 실제 Cloudflare 계정·VPS·Rust Agent를 모두 연결한 Phase 0 및 운영 E2E는 아직 완료되지 않았다.
 
 ## 문서와 디자인 자산
 
@@ -68,6 +68,7 @@
 - 사용자 Cookie, `Set-Cookie`, proxy/auth control header, Cloudflare 내부 header 제거.
 - Fetch body/response streaming, request abort propagation, WebSocket relay 코드 추가.
 - PostgreSQL `NOTIFY instance_state`를 통해 suspend/delete 시 진행 중 HTTP 연결 abort.
+- response body가 끝나거나 취소될 때까지 HTTP 요청을 추적하고, suspend/delete 시 활성 WebSocket도 함께 종료하도록 lifecycle 보강.
 - Gateway synthetic `/healthz` 경로와 health observation 기록 추가.
 
 ### Rust Agent
@@ -81,6 +82,7 @@
 - streaming HTTP body와 WebSocket 양방향 relay 구현.
 - `cloudflared tunnel --no-autoupdate run --token-file` 자식 감독과 backoff 재시작 구현.
 - OpenCodex에 넣을 `remoteAccess` JSON 출력 명령 추가.
+- WebSocket handshake key/version/upgrade header를 hop마다 새로 생성하도록 중복 전달 차단.
 
 ### Web UI
 
@@ -91,12 +93,21 @@
 - Activity, Security, 로그인, 초대 소비, loading/error/empty/mobile 상태 구현.
 - New instance, pairing code, open, token 발급, suspend, delete API 연결.
 - 개발 demo data mode: `VITE_REMOTE_DEMO=true`.
+- production SPA fallback과 미등록 `/api/*`, `/agent/*` JSON 404 경계 검증.
+
+### PostgreSQL 17 로컬 통합 검증
+
+- migration 17개 테이블 생성과 Better Auth users/sessions/accounts/verifications CRUD 확인.
+- 실제 Control Plane·worker·Gateway 자식 프로세스와 fake Cloudflare provider 동시 실행.
+- 두 사용자·두 인스턴스 provision, token/session/hostname 격리, Agent assertion scope 오류가 전부 `404`인지 확인.
+- HTTP/SSE, WebSocket 양방향 relay, 100 MiB upload/download streaming 확인.
+- Gateway 재시작 후 재연결과 suspend `NOTIFY`에 의한 진행 중 stream 취소 확인.
+- 중첩 SPA 경로는 production HTML, 미등록 API 경로는 JSON `404`인지 확인.
 
 ## 구현 중인 부분
 
-- Better Auth가 실제 migration schema와 정확히 호환되는지 PostgreSQL 통합 검증.
-- Control Plane에서 production web build를 제공하는 SPA fallback 검증.
-- Gateway WebSocket header relay와 client disconnect의 실제 OpenCodex E2E.
+- 실제 Rust Agent와 OpenCodex를 포함한 Gateway WebSocket/client disconnect E2E.
+- 실제 Cloudflare Mesh에서 30분 stream, reconnect, Tunnel/Gateway 재시작 측정.
 - suspend/delete saga의 Cloudflare 부분 실패 재시도와 orphan reconciliation.
 - Agent 설치·OpenCodex 설정 반영을 한 번에 수행하는 서명 검증 installer.
 - 네이티브 systemd 서비스와 `LoadCredential=` 배포 파일.
@@ -106,12 +117,12 @@
 
 ### P0 — 다음 컴퓨터에서 가장 먼저
 
-1. `platform` typecheck/build와 기존 집중 테스트를 다시 실행한다.
-2. 로컬 PostgreSQL 17 DB에 migration을 적용하고 Better Auth schema 호환 문제를 수정한다.
-3. Control Plane·worker·Gateway를 동시에 띄운 로컬 통합 테스트를 만든다.
-4. Phase 0 Cloudflare Mesh 계정 테스트를 수행한다.
-5. HTTP/SSE/WebSocket, 30분 stream, cancel/reconnect, 100 MiB body, Gateway/Tunnel 재시작을 측정한다.
-6. 두 사용자·두 인스턴스 교차 hostname/session/assertion 접근이 전부 `404`인지 검증한다.
+- [x] `platform` typecheck/build, root 전체 테스트, Rust fmt/clippy/test 재실행.
+- [x] PostgreSQL 17 migration과 Better Auth schema/CRUD 호환 검증.
+- [x] 실제 Control Plane·worker·Gateway를 동시에 띄우는 로컬 통합 테스트.
+- [ ] 실제 Cloudflare Mesh 계정 Phase 0. 현재 작업 환경에는 Account ID/API token이 없다.
+- [ ] 실제 Mesh/Rust Agent에서 30분 stream과 Tunnel 재시작 측정. 로컬 Gateway 기준 HTTP/SSE/WS, cancel/reconnect, 100 MiB body, Gateway 재시작은 통과했다.
+- [x] 두 사용자·두 인스턴스 교차 hostname/token/session/assertion 접근 `404` 검증.
 
 ### P1 — 운영 기능
 
@@ -143,7 +154,7 @@
 - Cloudflare adapter의 route create/delete 응답 shape는 live account로 검증하지 않았다.
 - Gateway synthetic token은 별도 systemd credential로 설계했지만 배포 파일은 아직 없다.
 - Better Auth의 OAuth account에는 GitHub access token이 저장될 수 있다. 운영 전 DB encryption/토큰 최소 보존 정책을 확정해야 한다.
-- Gateway와 Agent 구현은 컴파일 수준이며 부하·backpressure·100 MiB·30분 stream 테스트 전이다.
+- Gateway는 로컬 100 MiB 양방향 streaming과 취소를 통과했지만, Rust Agent를 포함한 부하·backpressure·30분 stream은 아직 측정하지 않았다.
 - 실제 DNS, TLS, 두 registrable domain, Cloudflare public ingress는 구성하지 않았다.
 
 ## 현재까지 확인된 검증
@@ -152,21 +163,25 @@
 PASS  bun run typecheck                         (root)
 PASS  bun test tests/server-management-auth.test.ts
       16 tests / 56 expects
+PASS  bun test --isolate tests
+      5961 pass / 1 skip / 0 fail / 30318 expects
+PASS  bun run privacy:scan
 PASS  cd platform && bun run typecheck
 PASS  cd platform && VITE_REMOTE_DEMO=true bun run build:web
+PASS  cd platform && PLATFORM_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55432/postgres \
+      bun test server/tests/postgres-integration.test.ts
+      1 test / 56 expects, PostgreSQL 17.10
 PASS  cd remote-agent && cargo fmt --check
 PASS  cd remote-agent && cargo check
 PASS  cd remote-agent && cargo clippy --all-targets --all-features -- -D warnings
 PASS  cd remote-agent && cargo test
-      1 Rust unit test
+      2 Rust unit tests
 ```
 
 아직 통과로 간주하면 안 되는 항목:
 
-- root 전체 `bun run test`: 120초 제한까지 다수 테스트가 통과했지만 최종 summary 전에 timeout되어 전체 green으로 간주하지 않음
-- root `bun run privacy:scan`
-- platform PostgreSQL/API integration test
 - 실제 Cloudflare Mesh Phase 0
+- 실제 Rust Agent/OpenCodex를 포함한 HTTP/SSE/WebSocket E2E와 30분 stream/Tunnel 재시작
 - 시각 QA와 접근성 브라우저 QA
 - systemd/VPS/backup restore 검증
 
@@ -180,10 +195,20 @@ bun install --frozen-lockfile
 bun run typecheck
 bun test tests/server-management-auth.test.ts
 
+cd gui
+bun install --frozen-lockfile
+cd ..
+bun test --isolate tests
+
 cd platform
 bun install --frozen-lockfile
 bun run typecheck
-VITE_REMOTE_DEMO=true bun run dev:web
+VITE_REMOTE_DEMO=true bun run build:web
+
+docker run --name ocx-remote-pg17 -e POSTGRES_HOST_AUTH_METHOD=trust \
+  -p 127.0.0.1:55432:5432 -d postgres:17-alpine
+PLATFORM_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55432/postgres \
+  bun test server/tests/postgres-integration.test.ts
 
 cd ../remote-agent
 cargo fmt --check

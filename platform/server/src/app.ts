@@ -223,6 +223,10 @@ export function createControlPlaneApp(config: PlatformConfig, auth: PlatformAuth
     }
   });
 
+  // Keep missing machine endpoints JSON-shaped. The SPA fallback below is for
+  // browser routes only and must never turn an API typo into a successful HTML response.
+  app.all("/api/*", c => c.json({ error: "not found" }, 404));
+  app.all("/agent/*", c => c.json({ error: "not found" }, 404));
   app.get("*", serveStatic({ root: "./web/dist" }));
   app.get("*", serveStatic({ path: "./web/dist/index.html" }));
   app.notFound(c => c.json({ error: "not found" }, 404));

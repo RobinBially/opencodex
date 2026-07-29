@@ -35,6 +35,18 @@ public instance hostname
 
 SSE와 HTTP response body는 buffer를 만들지 않고 전달한다. WebSocket은 Gateway와 Agent 두 hop에서 양방향으로 relay한다. 각 hop은 downstream disconnect를 upstream close/abort로 전파해야 한다.
 
+### Streaming lifecycle invariant
+
+Gateway의 HTTP 요청 추적 수명은 upstream `fetch()`가 헤더를 반환한 시점이 아니라 response body가 종료·오류·취소된 시점까지다. suspend/delete의 PostgreSQL 알림은 활성 HTTP controller를 abort하고 활성 WebSocket을 policy close한다. WebSocket의 key/version/upgrade header는 각 relay hop이 직접 생성하며 이전 hop의 handshake header를 재사용하지 않는다.
+
+[Decision Log]
+- 목적과 의도: suspend/delete 및 downstream disconnect가 이미 헤더를 받은 장기 SSE/HTTP/WS 연결도 즉시 종료하게 한다.
+- 기존 구현 및 제약 조건: response body는 buffering 없이 전달해야 하고, `fetch()` 완료 직후 cleanup하면 실제 stream 수명보다 추적이 먼저 끝난다.
+- 검토한 주요 대안: 응답 전체 buffering, 고정 timeout, fetch 완료 시 추적 해제, response stream lifecycle wrapper.
+- 선택한 방식: backpressure를 유지하는 `ReadableStream` wrapper에서 종료·취소 시 cleanup하고, WebSocket은 instance별 활성 registry로 추적한다.
+- 다른 대안 대신 이 방식을 선택한 이유: 본문 크기와 연결 시간에 무관하게 기존 streaming 성질을 유지하면서 취소와 중앙 정지를 정확히 전파한다.
+- 장점, 단점 및 영향: 100 MiB와 장기 stream도 상수 크기 buffering으로 중계하고 즉시 폐기할 수 있다. 대신 모든 body 종료 경로와 socket close 경로가 반드시 idempotent cleanup을 호출해야 한다.
+
 ## Credential classes
 
 - OpenCodex admin token: 기존 로컬 관리 자격증명.

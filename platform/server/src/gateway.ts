@@ -11,6 +11,7 @@ const store = new PlatformStore(database, config);
 const INSTANCE_COOKIE = "__Host-ocxr_instance";
 const REQUEST_HEADER_DENY = new Set([
   "connection", "cookie", "host", "proxy-authorization", "proxy-authenticate",
+  "upgrade",
   "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip",
   "x-opencodex-api-key", GATEWAY_ASSERTION_HEADER, "x-ocxr-synthetic",
   "x-opencodex-remote-token",
@@ -47,7 +48,12 @@ function sanitizeRequestHeaders(req: Request, target: URL, assertion: string): H
   const headers = new Headers();
   for (const [name, value] of req.headers) {
     const lower = name.toLowerCase();
-    if (REQUEST_HEADER_DENY.has(lower) || lower.startsWith("cf-") || lower.startsWith("x-ocxr-")) continue;
+    if (
+      REQUEST_HEADER_DENY.has(lower)
+      || lower.startsWith("cf-")
+      || lower.startsWith("sec-websocket-")
+      || lower.startsWith("x-ocxr-")
+    ) continue;
     if (lower === "authorization" && value.replace(/^Bearer\s+/i, "").startsWith("ocxr_")) continue;
     headers.append(name, value);
   }
@@ -79,6 +85,7 @@ function privateUrl(instance: InstanceRecord, requestUrl: URL): URL {
 }
 
 const activeRequests = new Map<string, Set<AbortController>>();
+const activeSockets = new Map<string, Set<Bun.ServerWebSocket<SocketData>>>();
 function track(instanceId: string, controller: AbortController): () => void {
   const set = activeRequests.get(instanceId) ?? new Set<AbortController>();
   set.add(controller);
@@ -89,6 +96,58 @@ function track(instanceId: string, controller: AbortController): () => void {
   };
 }
 
+function trackSocket(socket: Bun.ServerWebSocket<SocketData>): void {
+  const instanceId = socket.data.instance.id;
+  const sockets = activeSockets.get(instanceId) ?? new Set<Bun.ServerWebSocket<SocketData>>();
+  sockets.add(socket);
+  activeSockets.set(instanceId, sockets);
+}
+
+function untrackSocket(socket: Bun.ServerWebSocket<SocketData>): void {
+  const instanceId = socket.data.instance.id;
+  const sockets = activeSockets.get(instanceId);
+  sockets?.delete(socket);
+  if (!sockets?.size) activeSockets.delete(instanceId);
+}
+
+function streamWithLifecycle(
+  body: ReadableStream<Uint8Array>,
+  controller: AbortController,
+  cleanup: () => void,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+  };
+  return new ReadableStream({
+    async pull(output) {
+      try {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          finish();
+          output.close();
+        } else {
+          output.enqueue(chunk.value);
+        }
+      } catch (error) {
+        finish();
+        output.error(error);
+      }
+    },
+    async cancel(reason) {
+      controller.abort(reason);
+      try {
+        await reader.cancel(reason);
+      } finally {
+        finish();
+      }
+    },
+  });
+}
+
 async function listenForRevocations(): Promise<void> {
   const client = await database.pool.connect();
   client.on("notification", message => {
@@ -96,6 +155,9 @@ async function listenForRevocations(): Promise<void> {
     try {
       const { instanceId } = JSON.parse(message.payload) as { instanceId: string };
       for (const controller of activeRequests.get(instanceId) ?? []) controller.abort("instance disabled");
+      for (const socket of activeSockets.get(instanceId) ?? []) socket.close(1008, "instance disabled");
+      activeRequests.delete(instanceId);
+      activeSockets.delete(instanceId);
     } catch { /* malformed NOTIFY payload is ignored */ }
   });
   client.on("error", error => console.error("gateway PostgreSQL listener failed", error.message));
@@ -185,7 +247,12 @@ gatewayServer = Bun.serve<SocketData>({
     const controller = new AbortController();
     const untrack = track(auth.instance.id, controller);
     const abort = () => controller.abort(req.signal.reason);
-    req.signal.addEventListener("abort", abort, { once: true });
+    const cleanup = () => {
+      req.signal.removeEventListener("abort", abort);
+      untrack();
+    };
+    if (req.signal.aborted) abort();
+    else req.signal.addEventListener("abort", abort, { once: true });
     try {
       const response = await fetch(target, {
         method: req.method,
@@ -197,21 +264,24 @@ gatewayServer = Bun.serve<SocketData>({
         duplex: req.body ? "half" : undefined,
       } as RequestInit);
       if (url.pathname === "/healthz") await store.recordHealth(auth.instance.id, "gateway", response.ok);
-      return new Response(response.body, {
+      const body = response.body
+        ? streamWithLifecycle(response.body, controller, cleanup)
+        : null;
+      if (!body) cleanup();
+      return new Response(body, {
         status: response.status,
         statusText: response.statusText,
         headers: sanitizeResponseHeaders(response, host),
       });
     } catch {
+      cleanup();
       if (url.pathname === "/healthz") await store.recordHealth(auth.instance.id, "gateway", false);
       return new Response("Upstream unavailable", { status: 502 });
-    } finally {
-      req.signal.removeEventListener("abort", abort);
-      untrack();
     }
   },
   websocket: {
     open(ws) {
+      trackSocket(ws);
       const upstream = new WebSocket(ws.data.url, { headers: Object.fromEntries(ws.data.headers) } as never);
       ws.data.upstream = upstream;
       upstream.binaryType = "arraybuffer";
@@ -230,6 +300,7 @@ gatewayServer = Bun.serve<SocketData>({
       else ws.data.queued.push(typeof message === "string" ? message : Buffer.from(message));
     },
     close(ws, code, reason) {
+      untrackSocket(ws);
       if (ws.data.upstream && ws.data.upstream.readyState < WebSocket.CLOSING) ws.data.upstream.close(code, reason);
     },
   },
