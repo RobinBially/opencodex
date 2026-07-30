@@ -15,7 +15,9 @@
     "start:worker": "bun server/src/worker.ts"
   },
   "dependencies": {
+    "@noble/hashes": "2.2.0",
     "@tabler/icons-react": "^3.34.1",
+    "@xterm/xterm": "6.0.0",
     "better-auth": "^1.6.25",
     "hono": "^4.9.8",
     "pg": "^8.16.3",

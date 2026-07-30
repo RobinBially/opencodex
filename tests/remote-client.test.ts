@@ -33,7 +33,9 @@ describe("local Remote device authorization", () => {
     let passwordUpdated = false;
     let instanceActivated = false;
     let deviceRevoked = false;
+    let e2eeEnvelope: Record<string, unknown> | null = null;
     const deviceToken = `ocxr_device_${"d".repeat(43)}`;
+    const relayToken = `ocxr_agent_${"r".repeat(43)}`;
     const pollSecret = `ocxr_device_${"p".repeat(43)}`;
     const fetchImpl: typeof fetch = async (input, init) => {
       const url = new URL(String(input));
@@ -54,6 +56,8 @@ describe("local Remote device authorization", () => {
             status: "approved",
             deviceId: "22222222-2222-4222-8222-222222222222",
             deviceToken,
+            relayToken,
+            relayUrl: "wss://relay.opencodexpages.me/_ocxr/agent",
             user: { name: "Octo User", email: "octo@example.test", githubNumericId: "12345" },
           });
       }
@@ -63,6 +67,8 @@ describe("local Remote device authorization", () => {
         return Response.json({ profile: {
           passwordSet: passwordUpdated,
           canActivate: true,
+          e2ee: e2eeEnvelope,
+          devices: [],
           instance: instanceActivated ? {
             id: "33333333-3333-4333-8333-333333333333",
             name: "Test PC",
@@ -72,15 +78,27 @@ describe("local Remote device authorization", () => {
           } : null,
         } });
       }
-      if (url.pathname === "/api/v1/remote/password" && init?.method === "PUT") {
+      if (url.pathname === "/api/v1/remote/e2ee-profile" && init?.method === "PUT") {
+        expect(init?.headers).toMatchObject({ authorization: `Bearer ${deviceToken}` });
+        const body = JSON.parse(String(init.body)) as { authSecret: string; envelope: Record<string, unknown> };
+        expect(body.authSecret).toHaveLength(43);
+        e2eeEnvelope = body.envelope;
         passwordUpdated = true;
-        return Response.json({ ok: true });
+        return Response.json({ profile: {
+          passwordSet: true,
+          canActivate: true,
+          e2ee: e2eeEnvelope,
+          devices: [],
+          instance: null,
+        } });
       }
       if (url.pathname === "/api/v1/remote/activate" && init?.method === "POST") {
         instanceActivated = true;
         return Response.json({ profile: {
           passwordSet: true,
           canActivate: true,
+          e2ee: e2eeEnvelope,
+          devices: [],
           instance: {
             id: "33333333-3333-4333-8333-333333333333",
             name: "Test PC",
@@ -113,12 +131,14 @@ describe("local Remote device authorization", () => {
       passwordSet: false,
     });
     expect(JSON.stringify(connected)).not.toContain(deviceToken);
+    expect(JSON.stringify(connected)).not.toContain(relayToken);
 
     expect(await setRemotePassword("a-strong-remote-password", { fetchImpl })).toMatchObject({
       state: "connected",
       passwordSet: true,
     });
     expect(passwordUpdated).toBe(true);
+    expect(e2eeEnvelope).not.toBeNull();
     expect(await activateRemoteInstance("Test PC", "test-pc", { fetchImpl })).toMatchObject({
       state: "connected",
       instance: { slug: "test-pc", status: "pending" },

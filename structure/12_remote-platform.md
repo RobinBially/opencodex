@@ -1,95 +1,92 @@
 # OpenCodex Remote platform boundary
 
-OpenCodex Remote는 npm OpenCodex의 로컬 GUI/device client, 별도 중앙 플랫폼, 그리고 별도 설치하는 Linux Agent로 구성된다.
+OpenCodex Remote는 로컬 `ocx gui` 계정/기기 설정, 중앙 Control Plane/Gateway, 브라우저 작업공간, 사용자 권한 Rust Agent로 구성된다. 신규 경로의 기준 결정은 [ADR 0013](./adr/0013-remote-outbound-e2ee-relay.md)이다. 기존 Cloudflare Mesh 경로는 [ADR 0012](./adr/0012-remote-private-mesh.md)에 rollback 기록으로 남긴다.
 
 ## Repository boundary
 
-- `platform/server/` — Bun/Hono Control Plane, Auth Gateway, PostgreSQL worker.
-- `platform/web/` — React/Vite private dashboard.
-- `platform/server/migrations/` — Better Auth와 platform schema.
-- `remote-agent/` — Rust local ingress, pairing, heartbeat, cloudflared supervisor.
-- `src/remote/` + `src/server/management/remote-routes.ts` — 보호된 local device state와 `ocx gui` Remote API.
-- `src/server/remote-assertion.ts` — 기존 OpenCodex `/api/*`의 defense-in-depth verifier.
+- `src/remote/` — 보호된 `remote.json`, GitHub device flow, E2EE vault 생성/변경, Agent lifecycle.
+- `src/server/management/remote-routes.ts` — local `ocx gui`가 사용하는 same-origin management API.
+- `platform/server/` — GitHub identity, workspace/device metadata, access session, outbound relay Gateway.
+- `platform/web/` — 중앙 로그인/해제 화면과 wildcard domain의 xterm.js 작업공간.
+- `platform/server/migrations/0003_outbound_e2ee_relay.sql` — E2EE envelope, relay device presence, terminal session schema.
+- `remote-agent/` — Rust outbound WSS, E2EE handshake, fixed-profile portable PTY.
 
-루트 `package.json#files`에는 `platform/`과 `remote-agent/`를 추가하지 않는다. npm으로 설치되는 일반 OpenCodex 사용자는 local Remote page/client는 받지만 중앙 서비스나 privileged Agent source를 package payload로 받지 않는다.
+중앙 플랫폼 source는 npm package에 포함하지 않는다. 일반 OCX release에는 플랫폼별로 빌드·서명된 최소 Agent binary만 `bin/remote-agent/<platform>-<arch>/`에 동봉해야 한다. 런타임 `cargo build`는 금지한다.
 
-## Local-first user flow
+## User flow
 
 ```text
-ocx gui → Remote
-  → local device key + one-time polling secret
-  → opencodexpages.me GitHub OAuth and device-code approval
-  → separate Remote password
-  → reserve <slug>.opencodexpages.me and provision four Cloudflare resources
-  → pair signed Linux Agent
-  → instance hostname → GitHub ownership + Remote password → host-only session
+local ocx gui → Remote
+  → GitHub device approval
+  → first account device: local Argon2id E2EE password + encrypted vault envelope
+  → reserve one unique <slug>.opencodexpages.me workspace
+  → register this computer under a unique account-local name
+  → start the unprivileged prebuilt Agent
+  → Agent opens one outbound WSS to relay.opencodexpages.me
+
+another browser
+  → owning GitHub account
+  → local E2EE password derivation and vault unlock
+  → host-only workspace session
+  → choose an online computer and shell/codex/claude
+  → first authenticated resize/input frame starts the selected PTY
+  → browser ↔ Agent encrypted PTY frames through the opaque relay
 ```
 
-GitHub is identity-only. Better Auth may need the OAuth token during the callback, but account create/update hooks discard access, refresh, and ID tokens before database persistence. The local PC receives only a revocable `ocxr_device_` token. Open signup is an explicit `PLATFORM_SIGNUP_MODE=open` deployment choice; the production bootstrap remains `private` while the signed helper and abuse controls are unfinished.
+기존 계정은 새 E2EE 비밀번호를 처음 설정할 때 기존 slug를 보존한 채 `mesh-tunnel`에서 `outbound-relay`로 전환한다. 기존 Cloudflare 리소스 삭제는 자동 전환과 분리된 운영 작업이다.
 
 ## Trust boundaries
 
-1. Browser/CLI는 비신뢰 입력이다.
-2. Gateway는 DB ownership과 instance 상태의 authority다.
-3. Cloudflare private hostname은 DB가 만든 값만 사용한다. 사용자 slug로 내부 목적지를 계산하지 않는다.
-4. Rust Agent는 Gateway assertion을 검증하고 모든 proxy/control header를 정규화한다.
-5. OpenCodex management API는 Agent를 신뢰해 생략하지 않고 assertion을 다시 검증한다.
-6. Control Plane만 Cloudflare account token을 보유한다. Agent는 자기 Tunnel token만 받는다.
-7. Control Plane은 인스턴스별 `10.192.0.0/10` `/32`를 할당한다. Agent는 이 범위와 `10101`의 정확한 조합만 loopback ingress로 허용한다.
+1. GitHub는 계정 소유권만 증명한다. OAuth access/refresh/ID token은 DB에 저장하지 않는다.
+2. Remote 비밀번호와 Argon2id root, vault wrapping key는 로컬 브라우저/OCX를 떠나지 않는다.
+3. 서버가 받는 32-byte authentication secret은 password-equivalent이지만 HKDF 분리 때문에 vault envelope를 복호화할 수 없다.
+4. 브라우저는 account root Ed25519로 handshake를 서명하고 Agent는 device Ed25519로 응답을 서명한다.
+5. 세션별 ephemeral P-256 ECDH와 방향별 AES-256-GCM counter가 기밀성, endpoint binding, replay 방지를 제공한다.
+6. Gateway는 연결 경계에서만 DB를 사용하고 terminal frame을 해석·저장·로그하지 않는다.
+7. Agent는 `shell`, `codex`, `claude` 고정 profile만 실행하며 현재 OS 사용자 권한을 넘지 않는다.
+8. Cloudflare는 public TLS/ingress와 패킷 전달 경계다. E2EE endpoint나 plaintext authority가 아니다.
 
-## Data flow
+## Live data flow
 
 ```text
-public instance hostname
-  → Gateway ownership/session/token check
-  → 30-second Ed25519 request assertion
-  → Mesh private hostname route
-  → DNS-only private origin A record + narrow /32 activation route
-  → per-instance cloudflared
-  → Agent loopback alias:10101 assertion/replay/header validation
-  → loopback OpenCodex
+Browser xterm.js
+  ↕ encrypted session frames (AES-GCM, signed ephemeral ECDH)
+Cloudflare wildcard ingress
+  ↕ WSS
+Gateway in-memory bounded relay
+  ↕ one outbound WSS per online computer
+Rust Agent + portable-pty
+  ↕ current-user local process
+shell / codex / claude
 ```
 
-### Private origin addressing invariant
+Gateway frame header는 protocol version, kind, 128-bit terminal session ID만 가진다. payload는 최대 64 KiB 암호문이다. 기기당 active session은 4개, socket buffered output은 1 MiB로 제한한다. Agent가 연결되면 workspace는 `online`, 마지막 Agent가 끊기면 `offline`이다.
 
-`cloudflared`의 hostname-route 가상 DNS는 `/etc/hosts`의 `127.0.0.1` 매핑을 사용하지 않았고, loopback DNS 답은 Gateway synthetic IP로 변환되지 않았다. 따라서 Control Plane은 추측 불가능한 private hostname에 DNS-only RFC1918 A record를 먼저 만들고, 같은 `/32` CIDR route와 hostname route를 instance Tunnel에 연결한다. Agent는 할당된 `/32`를 `lo`에 추가해 LAN listener 없이 cloudflared가 origin을 해석하고 접속하게 한다.
+## Credential and key classes
 
-[Decision Log]
-- 목적과 의도: private hostname routing을 실제 Cloudflare DNS/connector 동작과 일치시키면서 Agent ingress를 LAN에 노출하지 않는다.
-- 기존 구현 및 제약 조건: `127.0.0.1` hosts 매핑은 cloudflared virtual DNS에서 NXDOMAIN이었고 hostname route만으로는 Tunnel `warp-routing`이 활성화되지 않았다.
-- 검토한 주요 대안: LAN IP에 `0.0.0.0` bind, public Tunnel hostname, custom DNS resolver, RFC1918 loopback alias와 `/32` activation route.
-- 선택한 방식: `10.192.0.0/10` 고유 `/32`를 privileged `prepare-network` 단계에서 Agent loopback에 bind하고 DNS record, CIDR route, hostname route를 함께 lifecycle 관리한다.
-- 다른 대안 대신 이 방식을 선택한 이유: public origin이나 LAN listener 없이 현재 Cloudflare API와 Mesh data plane에서 종단 연결이 실측 통과했다.
-- 장점, 단점 및 영향: origin은 로컬 전용이고 중앙 정책을 우회하지 않지만 인스턴스당 Cloudflare 리소스 네 개와 loopback 주소 관리가 추가된다. Agent runtime 자체는 `CAP_NET_ADMIN`을 보유하지 않는다.
+- `ocxr_device_`: 로컬 management API용 장치별 폐기 가능 token. `remote.json` 0600에만 저장.
+- `ocxr_agent_`: 해당 컴퓨터의 outbound Relay 연결 token. DB에는 SHA-256만 저장.
+- Instance session: 중앙 access code를 wildcard host-only HttpOnly cookie로 교환한 12시간 browser session.
+- E2EE authentication secret: Remote password의 Argon2id root에서 auth 전용 HKDF info로 만든 32 bytes. 서버는 다시 SHA-256하여 저장.
+- Vault wrapping key: 동일 root에서 별도 HKDF info로 만든 AES-256 key. 서버로 전송하지 않음.
+- Account root Ed25519: private key는 encrypted vault 안, public key는 서버/Agent 검증 metadata.
+- Device Ed25519: private key는 해당 컴퓨터 `remote.json`, public key는 workspace metadata.
+- Session ECDH/AES keys: 브라우저와 Agent memory에만 존재하고 session 종료 시 폐기.
 
-SSE와 HTTP response body는 buffer를 만들지 않고 전달한다. WebSocket은 Gateway와 Agent 두 hop에서 양방향으로 relay한다. 각 hop은 downstream disconnect를 upstream close/abort로 전파해야 한다.
+## Runtime and release invariants
 
-### Streaming lifecycle invariant
-
-Gateway의 HTTP 요청 추적 수명은 upstream `fetch()`가 헤더를 반환한 시점이 아니라 response body가 종료·오류·취소된 시점까지다. suspend/delete의 PostgreSQL 알림은 활성 HTTP controller를 abort하고 활성 WebSocket을 policy close한다. WebSocket의 key/version/upgrade header는 각 relay hop이 직접 생성하며 이전 hop의 handshake header를 재사용하지 않는다.
-
-[Decision Log]
-- 목적과 의도: suspend/delete 및 downstream disconnect가 이미 헤더를 받은 장기 SSE/HTTP/WS 연결도 즉시 종료하게 한다.
-- 기존 구현 및 제약 조건: response body는 buffering 없이 전달해야 하고, `fetch()` 완료 직후 cleanup하면 실제 stream 수명보다 추적이 먼저 끝난다.
-- 검토한 주요 대안: 응답 전체 buffering, 고정 timeout, fetch 완료 시 추적 해제, response stream lifecycle wrapper.
-- 선택한 방식: backpressure를 유지하는 `ReadableStream` wrapper에서 종료·취소 시 cleanup하고, WebSocket은 instance별 활성 registry로 추적한다.
-- 다른 대안 대신 이 방식을 선택한 이유: 본문 크기와 연결 시간에 무관하게 기존 streaming 성질을 유지하면서 취소와 중앙 정지를 정확히 전파한다.
-- 장점, 단점 및 영향: 100 MiB와 장기 stream도 상수 크기 buffering으로 중계하고 즉시 폐기할 수 있다. 대신 모든 body 종료 경로와 socket close 경로가 반드시 idempotent cleanup을 호출해야 한다.
-
-## Credential classes
-
-- OpenCodex admin token: 기존 로컬 관리 자격증명.
-- OpenCodex GUI session: 기존 exact-origin + CSRF session.
-- Remote assertion: 중앙 Gateway가 발급하고 Agent와 OpenCodex가 검증하는 `/api/*` 관리 자격증명.
-- `ocxr_` data token: instance-scoped `/v1/*` 입장 자격증명. OpenCodex origin에는 전달하지 않는다.
-- Instance session: browser가 authorization code를 교환해 얻는 host-only cookie. 공식 세션은 origin에 전달하지 않는다.
-- Remote device token: local `remote.json`에만 저장되는 `ocxr_device_` credential. GitHub token이 아니며 현재 PC 단위로 폐기한다.
-- Remote password: 중앙 Argon2id hash. GitHub session과 별개로 instance browser session 발급 전에 확인하며 5회 실패 시 15분 잠근다.
+- Agent는 root, `CAP_NET_ADMIN`, port forwarding, LAN listener를 요구하지 않는다.
+- Relay token을 argv, URL query, browser storage, log에 넣지 않는다.
+- 브라우저 vault handoff는 URL fragment로만 전달하고 wildcard origin 진입 즉시 `sessionStorage`로 옮긴 뒤 주소 표시줄/history에서 제거한다.
+- suspend/delete PostgreSQL 알림만 active sockets를 강제 종료한다. online/offline presence 알림은 revocation으로 취급하지 않는다.
+- Agent handshake 또는 frame 오류는 해당 terminal session만 닫아야 하며 다른 세션과 Agent WSS를 불필요하게 끊지 않는다.
+- build/test는 운영 VPS에서 transient systemd unit의 `CPUQuota=50%`, low CPU weight, positive nice로 실행한다. Remote runtime 서비스에는 영구 CPUQuota를 두지 않는다.
+- release 전 플랫폼별 signed Agent artifact, migration backup/rollback, real browser E2E, reconnect/backpressure, XSS/CSP 검증이 모두 필요하다.
 
 [Decision Log]
-- 목적과 의도: 개인 서버의 OpenCodex 전체 GUI/API/stream을 포트 공개 없이 안전하게 원격 제공한다.
-- 기존 구현 및 제약 조건: OpenCodex는 Bun-native loopback proxy이며 admin token과 GUI session 경계를 이미 가진다.
-- 검토한 주요 대안: public per-user hostname Tunnel, Cloudflare Access, Workers VPC, 자체 reverse tunnel.
-- 선택한 방식: 중앙 Gateway와 Cloudflare Mesh private hostname route, instance별 Tunnel, Rust local ingress.
-- 다른 대안 대신 이 방식을 선택한 이유: 사용자 origin을 공개하지 않고 중앙 ownership 정책을 모든 요청에 강제하면서 OpenCodex 기존 stream/WS surface를 보존할 수 있다.
-- 장점, 단점 및 영향: 중앙 인증과 즉시 정지가 가능하지만 Mesh Beta 적합성, 두 번의 proxy hop, 운영 복잡도가 생긴다. Phase 0 실패 시 구현을 중단한다.
+- 목적과 의도: 실제 구현과 문서가 하나의 현재 구조를 설명하고 기존 Mesh 기록은 rollback 근거로 보존한다.
+- 기존 구현 및 제약 조건: 기존 문서는 인스턴스당 Mesh/Tunnel과 중앙 plaintext proxy를 현재형으로 설명해 새 다중 컴퓨터 E2EE 구조와 충돌했다.
+- 검토한 주요 대안: 기존 문서에 부록만 추가, 완전 삭제, 현재 구조 재작성과 이전 ADR 보존.
+- 선택한 방식: 현재 구조를 이 문서의 본문으로 만들고 기존 경로는 superseded ADR과 운영 문서로 남긴다.
+- 다른 대안 대신 이 방식을 선택한 이유: 신규 개발자가 잘못된 root/Cloudflare lifecycle을 계속 구현하지 않으면서 검증된 rollback 지식도 잃지 않는다.
+- 장점, 단점 및 영향: 현재 data flow가 명확해지지만 운영 배포가 전환되기 전까지 코드 경로 두 개를 구분해 유지해야 한다.

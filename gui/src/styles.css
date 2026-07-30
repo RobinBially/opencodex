@@ -927,11 +927,20 @@ dialog.modal-overlay::backdrop {
 .remote-account-card > div:nth-child(2) > span, .remote-account-card small { color: var(--muted); font-size: var(--text-caption); overflow: hidden; text-overflow: ellipsis; }
 .remote-account-card .btn { margin-left: auto; }
 .remote-password-panel { padding: 22px; }
-.remote-password-panel .panel-head { display: flex; align-items: flex-start; gap: 12px; }
+.remote-password-panel .panel-head { display: flex; align-items: flex-start; justify-content: flex-start; gap: 12px; }
+.remote-password-panel .panel-head > div { min-width: 0; }
 .remote-password-panel .panel-head > svg { width: 20px; height: 20px; margin-top: 2px; color: var(--muted); flex: 0 0 auto; }
 .remote-password-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 4px 0 16px; }
 .remote-password-grid label { display: grid; gap: 6px; }
 .remote-password-grid label > span { color: var(--muted); font-size: var(--text-label); }
+.remote-device-panel { margin-top: 14px; }
+.remote-device-list { display: grid; gap: 8px; margin-top: 15px; }
+.remote-device-row { min-height: 58px; border: 1px solid var(--border); border-radius: var(--radius-control); padding: 9px 12px; display: grid; grid-template-columns: 9px 1fr auto; align-items: center; gap: 11px; }
+.remote-device-row > span { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); opacity: .5; }
+.remote-device-row > span.is-online { background: var(--success); opacity: 1; box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 14%, transparent); }
+.remote-device-row > div { display: grid; gap: 3px; min-width: 0; }
+.remote-device-row small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.remote-device-row em { color: var(--muted); font-size: var(--text-label); font-style: normal; }
 .remote-ready { border-color: color-mix(in srgb, var(--green) 34%, var(--border)); background: color-mix(in srgb, var(--green-soft) 58%, var(--surface)); }
 .remote-ready .remote-hero-icon { color: var(--green); background: var(--green-soft); }
 .remote-loading { display: flex; align-items: center; gap: 10px; color: var(--muted); }

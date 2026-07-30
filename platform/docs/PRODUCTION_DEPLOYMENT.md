@@ -22,7 +22,7 @@ The central service now has a dedicated GitHub OAuth application and the product
 
 The apex remains protected by a Cloudflare Access application allowing one exact maintainer email through One-Time PIN. Behind that edge boundary, the Control Plane still runs its non-production numeric-ID bootstrap path for the same maintainer while the signed Linux helper and abuse controls are unfinished.
 
-This is deliberately single-user. Do not add another Access email while numeric-ID bootstrap mode is active because every allowed request would inherit the bootstrap administrator. Before a multi-user beta, remove `PLATFORM_DEV_AUTH_GITHUB_ID`, set `NODE_ENV=production`, explicitly choose `PLATFORM_SIGNUP_MODE=private|open`, and remove or relax the apex Access application as intended.
+This is deliberately single-user. Do not add another Access email while numeric-ID bootstrap mode is active because every allowed request would inherit the bootstrap administrator. `PLATFORM_DEV_AUTO_APPROVE_DEVICE_LINKS=true` may be used only for a short, access-gated test: it makes a newly created device link inherit that bootstrap actor and approve immediately. Before a multi-user beta, remove `PLATFORM_DEV_AUTH_GITHUB_ID` and `PLATFORM_DEV_AUTO_APPROVE_DEVICE_LINKS`, set `NODE_ENV=production`, explicitly choose `PLATFORM_SIGNUP_MODE=private|open`, and remove or relax the apex Access application as intended.
 
 The wildcard instance Gateway is not placed behind the apex Access application. It continues to require an instance session or `ocxr_` token and conceals invalid access as `404`.
 

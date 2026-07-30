@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Pool } from "pg";
 import { verifyRemoteManagementAssertion } from "../../../src/server/remote-assertion";
+import { BrowserTerminalCipher, type RemoteVault } from "../../web/src/e2ee";
 import { createPlatformAuth } from "../src/auth";
 import { loadPlatformConfig } from "../src/config";
 import { Database } from "../src/db";
@@ -83,12 +85,13 @@ postgresTest("PostgreSQL 17 auth, lifecycle, isolation, and streaming stay compa
   const processes: Array<ReturnType<typeof Bun.spawn>> = [];
   let database: Database | null = null;
   let fakeAgent: ReturnType<typeof Bun.serve> | null = null;
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "ocxr-relay-integration-"));
 
   try {
     await adminPool.query(`CREATE DATABASE ${quotedDatabaseName}`);
     const migrationPool = new Pool({ connectionString: databaseUrl.toString(), max: 1 });
     try {
-      for (const migrationName of ["0001_remote_platform.sql", "0002_remote_devices.sql"]) {
+      for (const migrationName of ["0001_remote_platform.sql", "0002_remote_devices.sql", "0003_outbound_e2ee_relay.sql"]) {
         const migration = readFileSync(join(import.meta.dir, "..", "migrations", migrationName), "utf8");
         await migrationPool.query(migration);
       }
@@ -117,6 +120,7 @@ postgresTest("PostgreSQL 17 auth, lifecycle, isolation, and streaming stay compa
       PLATFORM_SYNTHETIC_HEALTH_TOKEN: randomBytes(32).toString("base64url"),
       PLATFORM_CONTROL_PORT: String(controlPort),
       PLATFORM_GATEWAY_PORT: String(gatewayPort),
+      PLATFORM_RELAY_URL: `ws://127.0.0.1:${gatewayPort}/_ocxr/agent`,
       CLOUDFLARE_MESH_ENABLED: "false",
       BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
       GITHUB_CLIENT_ID: "integration-client",
@@ -227,9 +231,82 @@ postgresTest("PostgreSQL 17 auth, lifecycle, isolation, and streaming stay compa
     expect(await store.remoteProfile(firstActor)).toMatchObject({ passwordSet: false, canActivate: true, instance: null });
     await store.setRemotePassword(firstActor, "integration-password");
     await store.setRemotePassword(secondActor, "second-integration-password");
-    expect(await store.remoteProfile(firstActor)).toMatchObject({ passwordSet: true, canActivate: true, instance: null });
+    // Legacy password hashes remain valid for the rollback Mesh path but must
+    // not masquerade as an end-to-end encrypted profile in the new GUI.
+    expect(await store.remoteProfile(firstActor)).toMatchObject({ passwordSet: false, canActivate: true, instance: null });
     expect(await store.acknowledgeDeviceAuthorization(deviceLink.id, deviceLink.pollSecret)).toBe(true);
     expect((await store.pollDeviceAuthorization(deviceLink.id, deviceLink.pollSecret))?.status).toBe("consumed");
+
+    const relayUser = await adapter.createOAuthUser(
+      {
+        name: "Relay User",
+        email: "relay@example.test",
+        emailVerified: true,
+        image: null,
+        githubNumericId: "333333",
+      } as Parameters<typeof adapter.createOAuthUser>[0] & { githubNumericId: string },
+      { accountId: "333333", providerId: "github", accessToken: "discard-me" },
+    );
+    await database.query("UPDATE users SET status='active' WHERE id=$1", [relayUser.user.id]);
+    const relayActor = await store.authorizeUser({
+      id: relayUser.user.id,
+      name: relayUser.user.name,
+      email: relayUser.user.email,
+      githubNumericId: "333333",
+    });
+    if (!relayActor) throw new Error("relay actor was not authorized");
+    const relaySigning = generateKeyPairSync("ed25519");
+    const relayEcdh = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    const relayLink = await store.createDeviceAuthorization({
+      deviceName: "Relay workstation",
+      platform: "linux-x64",
+      publicKeyDer: relaySigning.publicKey.export({ type: "spki", format: "der" }),
+      ecdhPublicKeyDer: relayEcdh.publicKey.export({ type: "spki", format: "der" }),
+      networkSignal: "127.0.0.1",
+    });
+    await store.approveDeviceAuthorization(relayActor, relayLink.id);
+    const relayApproval = await store.pollDeviceAuthorization(relayLink.id, relayLink.pollSecret);
+    expect(relayApproval?.relayToken?.startsWith("ocxr_agent_")).toBe(true);
+    const rootKey = generateKeyPairSync("ed25519");
+    const rootPublicKey = rootKey.publicKey.export({ type: "spki", format: "der" });
+    const relayAuthSecret = randomBytes(32).toString("base64url");
+    await store.setRemoteE2eeProfile(relayActor, relayAuthSecret, {
+      version: "ocx-e2ee-v1",
+      salt: randomBytes(16).toString("base64url"),
+      nonce: randomBytes(12).toString("base64url"),
+      ciphertext: randomBytes(48).toString("base64url"),
+      rootPublicKey: rootPublicKey.toString("base64url"),
+      kdf: { algorithm: "argon2id", memoryKiB: 65_536, iterations: 3, parallelism: 1, outputLength: 32 },
+    });
+    const relayWorkspace = await store.activateRemoteInstance(
+      relayActor,
+      relayApproval?.deviceId ?? "",
+      { name: "Relay workstation", slug: "relay-user" },
+    );
+    expect(relayWorkspace).toMatchObject({
+      passwordSet: true,
+      instance: { slug: "relay-user", transportMode: "outbound-relay", status: "awaiting_agent" },
+    });
+    const relayConnection = await store.authorizeRelayToken(relayApproval?.relayToken ?? "");
+    expect(relayConnection).toMatchObject({ actor: { id: relayActor.id }, name: "Relay workstation" });
+    const terminal = await store.createTerminalSession(
+      relayActor.id,
+      relayWorkspace.instance!.id,
+      relayConnection!.deviceId,
+      "codex",
+    );
+    expect(await store.resolveTerminalSession(relayActor.id, relayWorkspace.instance!.id, terminal.id)).toMatchObject({
+      id: terminal.id,
+      commandProfile: "codex",
+    });
+    await store.markTerminalConnected(terminal.id);
+    await store.markTerminalClosed(terminal.id);
+    expect(await store.resolveTerminalSession(relayActor.id, relayWorkspace.instance!.id, terminal.id)).toBeNull();
+    expect(await store.issueInstanceAuthorization(relayActor, relayWorkspace.instance!.id, relayAuthSecret)).toStartWith(
+      "https://relay-user.instances.example.test/_ocxr/exchange?code=",
+    );
+    await store.markRelayDisconnected(relayConnection!.deviceId);
+    expect((await store.remoteProfile(relayActor)).instance?.status).toBe("offline");
 
     let firstInstanceId: string | null = null;
     let upstreamStreamCancelled = false;
@@ -343,6 +420,110 @@ postgresTest("PostgreSQL 17 auth, lifecycle, isolation, and streaming stay compa
       const response = await fetch(`http://127.0.0.1:${controlPort}/healthz`);
       return response.ok ? true : null;
     });
+
+    const relayStatePath = join(temporaryDirectory, "remote.json");
+    const relayVault: RemoteVault = {
+      version: 1,
+      vaultKey: randomBytes(32).toString("base64url"),
+      rootPrivateKeyPem: rootKey.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    };
+    writeFileSync(relayStatePath, JSON.stringify({
+      version: 2,
+      state: "connected",
+      relayUrl: environment.PLATFORM_RELAY_URL,
+      relayToken: relayApproval?.relayToken,
+      deviceId: relayApproval?.deviceId,
+      privateKeyPem: relaySigning.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      e2ee: { rootPublicKey: rootPublicKey.toString("base64url") },
+      instance: { id: relayWorkspace.instance!.id },
+    }), { mode: 0o600 });
+    chmodSync(relayStatePath, 0o600);
+    const relayAgent = Bun.spawn([
+      join(platformRoot, "..", "remote-agent", "target", "debug", "opencodex-remote-agent"),
+      "relay",
+      "--state",
+      relayStatePath,
+    ], {
+      cwd: join(platformRoot, ".."),
+      env: environment,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    processes.push(relayAgent);
+    const relayAuthorizationUrl = new URL(await store.issueInstanceAuthorization(
+      relayActor,
+      relayWorkspace.instance!.id,
+      relayAuthSecret,
+    ));
+    const relayExchange = await fetch(
+      `http://127.0.0.1:${gatewayPort}${relayAuthorizationUrl.pathname}${relayAuthorizationUrl.search}`,
+      { headers: { host: "relay-user.instances.example.test" }, redirect: "manual" },
+    );
+    expect(relayExchange.status).toBe(302);
+    const relaySessionCookie = relayExchange.headers.get("set-cookie")?.split(";", 1)[0];
+    expect(relaySessionCookie).toStartWith("__Host-ocxr_instance=");
+    const relayWorkspaceView = await waitFor(async () => {
+      if (relayAgent.exitCode !== null) throw new Error("Rust relay Agent exited during startup");
+      const response = await fetch(`http://127.0.0.1:${gatewayPort}/api/v1/workspace`, {
+        headers: { host: "relay-user.instances.example.test", cookie: relaySessionCookie! },
+      });
+      if (!response.ok) return null;
+      const body = await response.json() as { devices: Array<{ id: string; relayOnline: boolean }> };
+      return body.devices.some(device => device.id === relayApproval?.deviceId && device.relayOnline) ? body : null;
+    });
+    expect(relayWorkspaceView.devices).toHaveLength(1);
+    const missingWorkspaceAsset = await fetch(`http://127.0.0.1:${gatewayPort}/assets/missing-workspace.js`, {
+      headers: { host: "relay-user.instances.example.test", cookie: relaySessionCookie! },
+    });
+    expect(missingWorkspaceAsset.status).toBe(404);
+    expect(await missingWorkspaceAsset.text()).toBe("Not found");
+    const terminalResponse = await fetch(`http://127.0.0.1:${gatewayPort}/api/v1/terminal-sessions`, {
+      method: "POST",
+      headers: {
+        host: "relay-user.instances.example.test",
+        cookie: relaySessionCookie!,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ deviceId: relayApproval?.deviceId, commandProfile: "shell" }),
+    });
+    expect(terminalResponse.status).toBe(201);
+    const terminalBody = await terminalResponse.json() as { session: { id: string }; websocketPath: string };
+    const terminalSocket = new WebSocket(
+      `ws://127.0.0.1:${gatewayPort}${terminalBody.websocketPath}`,
+      { headers: { host: "relay-user.instances.example.test", cookie: relaySessionCookie! } } as never,
+    );
+    terminalSocket.binaryType = "arraybuffer";
+    await new Promise<void>((resolve, reject) => {
+      terminalSocket.addEventListener("open", () => resolve(), { once: true });
+      terminalSocket.addEventListener("error", () => reject(new Error("terminal WebSocket failed to open")), { once: true });
+    });
+    const terminalCipher = await BrowserTerminalCipher.handshake(
+      terminalSocket,
+      terminalBody.session.id,
+      "shell",
+      {
+        id: relayApproval!.deviceId!,
+        signingPublicKey: relaySigning.publicKey.export({ type: "spki", format: "der" }).toString("base64url"),
+      },
+      relayVault,
+    );
+    let terminalOutput = "";
+    let terminalReceiveQueue = Promise.resolve();
+    terminalSocket.addEventListener("message", event => {
+      if (!(event.data instanceof ArrayBuffer)) return;
+      terminalReceiveQueue = terminalReceiveQueue.then(async () => {
+        const plaintext = await terminalCipher.decrypt(event.data);
+        if (plaintext[0] === 3) terminalOutput += new TextDecoder().decode(plaintext.subarray(1));
+      });
+    });
+    const terminalCommand = new TextEncoder().encode("printf 'OCXR_RELAY_OK\\n'; exit\\n");
+    const applicationInput = new Uint8Array(1 + terminalCommand.length);
+    applicationInput[0] = 1;
+    applicationInput.set(terminalCommand, 1);
+    terminalSocket.send(await terminalCipher.encrypt(applicationInput));
+    await waitFor(async () => terminalOutput.includes("OCXR_RELAY_OK") ? true : null, 10_000);
+    expect(terminalOutput).toContain("OCXR_RELAY_OK");
+    terminalSocket.close();
     const spa = await fetch(`http://127.0.0.1:${controlPort}/instances/first`);
     expect(spa.status).toBe(200);
     expect(spa.headers.get("content-type")).toContain("text/html");
@@ -351,21 +532,12 @@ postgresTest("PostgreSQL 17 auth, lifecycle, isolation, and streaming stay compa
     expect(missingApi.status).toBe(404);
     expect(missingApi.headers.get("content-type")).toContain("application/json");
 
-    const createResponse = await fetch(`http://127.0.0.1:${controlPort}/api/v1/remote/activate`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${approvedDevice?.deviceToken}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ name: "First Instance", slug: "first" }),
-    });
-    const createBody = await createResponse.json() as { error?: string; profile?: { instance: { id: string; publicUrl: string } } };
-    if (createResponse.status !== 202 || !createBody.profile) {
-      throw new Error(`remote activation failed (${createResponse.status}): ${createBody.error ?? "missing profile"}`);
-    }
-    const createdFirst = createBody as { profile: { instance: { id: string; publicUrl: string } } };
-    firstInstanceId = createdFirst.profile.instance.id;
-    expect(createdFirst.profile.instance.publicUrl).toBe("https://first.instances.example.test");
+    const createdFirst = await store.createInstance(firstActor, { name: "First Instance", slug: "first" });
+    firstInstanceId = createdFirst.id;
+    await database.query(
+      "UPDATE remote_devices SET instance_id=$1 WHERE id=$2 AND user_id=$3",
+      [firstInstanceId, approvedDevice?.deviceId, firstActor.id],
+    );
     const createdSecond = await store.createInstance(secondActor, { name: "Second Instance", slug: "second" });
 
     await waitFor(async () => {
@@ -590,5 +762,6 @@ postgresTest("PostgreSQL 17 auth, lifecycle, isolation, and streaming stay compa
     await adminPool.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1", [databaseName]);
     await adminPool.query(`DROP DATABASE IF EXISTS ${quotedDatabaseName}`);
     await adminPool.end();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 }, 60_000);

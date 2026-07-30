@@ -4,6 +4,11 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import {
+  createRemoteE2eeProfile,
+  rewrapRemoteE2eeProfile,
+  type RemoteE2eeEnvelope,
+} from "./e2ee";
+import {
   atomicWriteFile,
   backupInvalidConfig,
   getConfigDir,
@@ -12,7 +17,7 @@ import {
 } from "../config";
 
 const DEFAULT_CONTROL_PLANE_URL = "https://opencodexpages.me";
-const REMOTE_STATE_VERSION = 1;
+const REMOTE_STATE_VERSION = 2;
 const REMOTE_REQUEST_TIMEOUT_MS = 15_000;
 const MAX_REMOTE_RESPONSE_BYTES = 256 * 1024;
 
@@ -24,11 +29,52 @@ const remoteInstanceSchema = z.object({
     "pending", "provisioning", "awaiting_agent", "connecting", "online", "degraded", "offline",
     "suspending", "suspended", "deleting", "delete_failed", "deleted",
   ]),
+  transportMode: z.enum(["mesh-tunnel", "outbound-relay"]).default("mesh-tunnel"),
   publicUrl: z.string().url(),
 });
 
-const pendingStateSchema = z.object({
-  version: z.literal(REMOTE_STATE_VERSION),
+const remoteAccountSchema = z.object({
+  name: z.string(),
+  email: z.string().email(),
+  githubNumericId: z.string().regex(/^\d+$/),
+});
+
+const remoteE2eeEnvelopeSchema = z.object({
+  version: z.literal("ocx-e2ee-v1"),
+  salt: z.string(),
+  nonce: z.string(),
+  ciphertext: z.string(),
+  rootPublicKey: z.string(),
+  kdf: z.object({
+    algorithm: z.literal("argon2id"),
+    memoryKiB: z.number().int(),
+    iterations: z.number().int(),
+    parallelism: z.number().int(),
+    outputLength: z.literal(32),
+  }),
+});
+
+const remoteDeviceSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  platform: z.string(),
+  signingPublicKey: z.string(),
+  ecdhPublicKey: z.string().nullable(),
+  relayOnline: z.boolean(),
+  lastSeenAt: z.string().datetime().nullable(),
+  instanceId: z.string().uuid().nullable(),
+});
+
+const remoteProfileSchema = z.object({
+  passwordSet: z.boolean(),
+  canActivate: z.boolean(),
+  e2ee: remoteE2eeEnvelopeSchema.nullable().default(null),
+  devices: z.array(remoteDeviceSchema).default([]),
+  instance: remoteInstanceSchema.nullable().default(null),
+});
+
+const legacyPendingStateSchema = z.object({
+  version: z.literal(1),
   state: z.literal("pending"),
   controlPlaneUrl: z.string().url(),
   privateKeyPem: z.string().min(1),
@@ -39,24 +85,56 @@ const pendingStateSchema = z.object({
   expiresAt: z.string().datetime(),
 });
 
-const connectedStateSchema = z.object({
+const pendingStateSchema = z.object({
   version: z.literal(REMOTE_STATE_VERSION),
+  state: z.literal("pending"),
+  controlPlaneUrl: z.string().url(),
+  privateKeyPem: z.string().min(1),
+  ecdhPrivateKeyPem: z.string().min(1),
+  linkId: z.string().uuid(),
+  pollSecret: z.string().startsWith("ocxr_device_"),
+  userCode: z.string().min(4).max(32),
+  authorizeUrl: z.string().url(),
+  expiresAt: z.string().datetime(),
+});
+
+const legacyConnectedStateSchema = z.object({
+  version: z.literal(1),
   state: z.literal("connected"),
   controlPlaneUrl: z.string().url(),
   privateKeyPem: z.string().min(1),
   deviceId: z.string().uuid(),
   deviceToken: z.string().startsWith("ocxr_device_"),
-  account: z.object({
-    name: z.string(),
-    email: z.string().email(),
-    githubNumericId: z.string().regex(/^\d+$/),
-  }),
+  account: remoteAccountSchema,
   passwordSet: z.boolean().default(false),
   canActivate: z.boolean().default(false),
   instance: remoteInstanceSchema.nullable().default(null),
 });
 
-const remoteStateSchema = z.discriminatedUnion("state", [pendingStateSchema, connectedStateSchema]);
+const connectedStateSchema = z.object({
+  version: z.literal(REMOTE_STATE_VERSION),
+  state: z.literal("connected"),
+  controlPlaneUrl: z.string().url(),
+  privateKeyPem: z.string().min(1),
+  ecdhPrivateKeyPem: z.string().min(1),
+  deviceId: z.string().uuid(),
+  deviceToken: z.string().startsWith("ocxr_device_"),
+  relayToken: z.string().startsWith("ocxr_agent_"),
+  relayUrl: z.string().url(),
+  account: remoteAccountSchema,
+  passwordSet: z.boolean().default(false),
+  canActivate: z.boolean().default(false),
+  e2ee: remoteE2eeEnvelopeSchema.nullable().default(null),
+  devices: z.array(remoteDeviceSchema).default([]),
+  instance: remoteInstanceSchema.nullable().default(null),
+});
+
+const remoteStateSchema = z.union([
+  legacyPendingStateSchema,
+  pendingStateSchema,
+  legacyConnectedStateSchema,
+  connectedStateSchema,
+]);
 type RemoteState = z.infer<typeof remoteStateSchema>;
 
 export type RemoteStatus =
@@ -78,6 +156,9 @@ export type RemoteStatus =
     account: { name: string; email: string; githubNumericId: string };
     passwordSet: boolean;
     canActivate: boolean;
+    relayReady: boolean;
+    e2ee: z.infer<typeof remoteE2eeEnvelopeSchema> | null;
+    devices: z.infer<typeof remoteDeviceSchema>[];
     instance: z.infer<typeof remoteInstanceSchema> | null;
     error?: string;
   };
@@ -197,6 +278,9 @@ function publicStatus(state: RemoteState, serviceReachable: boolean, error?: str
     account: state.account,
     passwordSet: state.passwordSet,
     canActivate: state.canActivate,
+    relayReady: state.version === REMOTE_STATE_VERSION,
+    e2ee: state.version === REMOTE_STATE_VERSION ? state.e2ee : null,
+    devices: state.version === REMOTE_STATE_VERSION ? state.devices : [],
     instance: state.instance,
     ...(error ? { error } : {}),
   };
@@ -216,8 +300,11 @@ export async function startRemoteLink(deps: RemoteClientDependencies = {}): Prom
   if (existing?.state === "connected") return publicStatus(existing, true);
   const controlPlaneUrl = configuredControlPlaneUrl(deps.controlPlaneUrl);
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const { privateKey: ecdhPrivateKey, publicKey: ecdhPublicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
   const publicKeyDer = publicKey.export({ type: "spki", format: "der" });
+  const ecdhPrivateKeyPem = ecdhPrivateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const ecdhPublicKeyDer = ecdhPublicKey.export({ type: "spki", format: "der" });
   const response = await remoteJson<{
     id: string;
     pollSecret: string;
@@ -230,6 +317,7 @@ export async function startRemoteLink(deps: RemoteClientDependencies = {}): Prom
       deviceName: (deps.deviceName ?? hostname()).slice(0, 80) || "OpenCodex device",
       platform: deps.devicePlatform ?? `${platform()}-${arch()}`,
       publicKey: Buffer.from(publicKeyDer).toString("base64url"),
+      ecdhPublicKey: Buffer.from(ecdhPublicKeyDer).toString("base64url"),
     },
   }, deps.fetchImpl ?? fetch);
   const authorizeUrl = new URL(response.authorizeUrl);
@@ -239,6 +327,7 @@ export async function startRemoteLink(deps: RemoteClientDependencies = {}): Prom
     state: "pending",
     controlPlaneUrl,
     privateKeyPem,
+    ecdhPrivateKeyPem,
     linkId: response.id,
     pollSecret: response.pollSecret,
     userCode: response.userCode,
@@ -264,6 +353,8 @@ export async function getRemoteStatus(deps: RemoteClientDependencies = {}): Prom
         status: "pending" | "approved" | "expired" | "consumed";
         deviceId?: string;
         deviceToken?: string;
+        relayToken?: string;
+        relayUrl?: string;
         user?: { name: string; email: string; githubNumericId: string };
       }>(controlPlaneUrl, `/api/v1/device-links/${state.linkId}`, {
         headers: { "x-ocxr-link-secret": state.pollSecret },
@@ -273,16 +364,41 @@ export async function getRemoteStatus(deps: RemoteClientDependencies = {}): Prom
         return { state: "signed_out", controlPlaneUrl, serviceReachable: true, error: "device authorization expired" };
       }
       if (result.status === "approved") {
+        if (!result.deviceId || !result.deviceToken || !result.user) throw new Error("device approval response is incomplete");
+        let relayToken = result.relayToken;
+        let relayUrl = result.relayUrl;
+        let ecdhPrivateKeyPem = state.version === REMOTE_STATE_VERSION ? state.ecdhPrivateKeyPem : "";
+        if (!relayToken || !relayUrl || !ecdhPrivateKeyPem) {
+          const pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+          ecdhPrivateKeyPem = pair.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+          const rotated = await remoteJson<{ relayToken: string; relayUrl: string }>(
+            controlPlaneUrl,
+            "/api/v1/devices/current/relay-credentials",
+            {
+              method: "POST",
+              headers: { authorization: `Bearer ${result.deviceToken}` },
+              body: { ecdhPublicKey: pair.publicKey.export({ type: "spki", format: "der" }).toString("base64url") },
+            },
+            fetchImpl,
+          );
+          relayToken = rotated.relayToken;
+          relayUrl = rotated.relayUrl;
+        }
         const connected = connectedStateSchema.parse({
           version: REMOTE_STATE_VERSION,
           state: "connected",
           controlPlaneUrl,
           privateKeyPem: state.privateKeyPem,
+          ecdhPrivateKeyPem,
           deviceId: result.deviceId,
           deviceToken: result.deviceToken,
+          relayToken,
+          relayUrl,
           account: result.user,
           passwordSet: false,
           canActivate: false,
+          e2ee: null,
+          devices: [],
           instance: null,
         });
         writeState(connected);
@@ -295,28 +411,40 @@ export async function getRemoteStatus(deps: RemoteClientDependencies = {}): Prom
       return publicStatus(state, true);
     }
 
-    const result = await remoteJson<{ profile: {
-      passwordSet: boolean;
-      canActivate: boolean;
-      instance: z.infer<typeof remoteInstanceSchema> | null;
-    } }>(
+    if (state.version === 1) {
+      const pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+      const rotated = await remoteJson<{ relayToken: string; relayUrl: string }>(
+        controlPlaneUrl,
+        "/api/v1/devices/current/relay-credentials",
+        {
+          method: "POST",
+          headers: { authorization: `Bearer ${state.deviceToken}` },
+          body: { ecdhPublicKey: pair.publicKey.export({ type: "spki", format: "der" }).toString("base64url") },
+        },
+        fetchImpl,
+      );
+      const upgraded = connectedStateSchema.parse({
+        ...state,
+        version: REMOTE_STATE_VERSION,
+        ecdhPrivateKeyPem: pair.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+        relayToken: rotated.relayToken,
+        relayUrl: rotated.relayUrl,
+        e2ee: null,
+        devices: [],
+      });
+      writeState(upgraded);
+      return getRemoteStatus(deps);
+    }
+
+    const result = await remoteJson<{ profile: z.input<typeof remoteProfileSchema> }>(
       controlPlaneUrl,
       "/api/v1/remote/profile",
       { headers: { authorization: `Bearer ${state.deviceToken}` } },
       fetchImpl,
     );
-    const instance = result.profile.instance ? remoteInstanceSchema.parse(result.profile.instance) : null;
-    if (
-      state.passwordSet !== result.profile.passwordSet
-      || state.canActivate !== result.profile.canActivate
-      || JSON.stringify(state.instance) !== JSON.stringify(instance)
-    ) {
-      const refreshed = {
-        ...state,
-        passwordSet: result.profile.passwordSet,
-        canActivate: result.profile.canActivate,
-        instance,
-      };
+    const profile = remoteProfileSchema.parse(result.profile);
+    const refreshed = connectedStateSchema.parse({ ...state, ...profile });
+    if (JSON.stringify(state) !== JSON.stringify(refreshed)) {
       writeState(refreshed);
       return publicStatus(refreshed, true);
     }
@@ -337,12 +465,59 @@ export async function setRemotePassword(password: string, deps: RemoteClientDepe
   if (password.length < 10 || password.length > 128) throw new Error("remote password must be 10 to 128 characters");
   const state = readState();
   if (!state || state.state !== "connected") throw new Error("remote account is not connected");
-  await remoteJson(state.controlPlaneUrl, "/api/v1/remote/password", {
+  if (state.version !== REMOTE_STATE_VERSION) throw new Error("refresh Remote before setting the encrypted password");
+  const local = await createRemoteE2eeProfile(password, `github:${state.account.githubNumericId}`);
+  const result = await remoteJson<{ profile: z.input<typeof remoteProfileSchema> }>(state.controlPlaneUrl, "/api/v1/remote/e2ee-profile", {
     method: "PUT",
     headers: { authorization: `Bearer ${state.deviceToken}` },
-    body: { password },
+    body: local,
   }, deps.fetchImpl ?? fetch);
-  const updated = { ...state, passwordSet: true };
+  let profile = remoteProfileSchema.parse(result.profile);
+  if (profile.instance?.transportMode === "mesh-tunnel") {
+    const currentDeviceName = profile.devices.find(device => device.id === state.deviceId)?.name ?? profile.instance.name;
+    const activated = await remoteJson<{ profile: z.input<typeof remoteProfileSchema> }>(
+      state.controlPlaneUrl,
+      "/api/v1/remote/activate",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${state.deviceToken}` },
+        body: { name: currentDeviceName, slug: profile.instance.slug },
+      },
+      deps.fetchImpl ?? fetch,
+    );
+    profile = remoteProfileSchema.parse(activated.profile);
+  }
+  const updated = connectedStateSchema.parse({ ...state, ...profile });
+  writeState(updated);
+  return publicStatus(updated, true);
+}
+
+export async function changeRemotePassword(
+  oldPassword: string,
+  newPassword: string,
+  deps: RemoteClientDependencies = {},
+): Promise<RemoteStatus> {
+  const state = readState();
+  if (!state || state.state !== "connected" || state.version !== REMOTE_STATE_VERSION || !state.e2ee) {
+    throw new Error("end-to-end encrypted Remote is not configured");
+  }
+  const changed = await rewrapRemoteE2eeProfile(
+    oldPassword,
+    newPassword,
+    `github:${state.account.githubNumericId}`,
+    state.e2ee as RemoteE2eeEnvelope,
+  );
+  const result = await remoteJson<{ profile: z.input<typeof remoteProfileSchema> }>(
+    state.controlPlaneUrl,
+    "/api/v1/remote/e2ee-profile/change",
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${state.deviceToken}` },
+      body: changed,
+    },
+    deps.fetchImpl ?? fetch,
+  );
+  const updated = connectedStateSchema.parse({ ...state, ...remoteProfileSchema.parse(result.profile) });
   writeState(updated);
   return publicStatus(updated, true);
 }
@@ -354,16 +529,12 @@ export async function activateRemoteInstance(
 ): Promise<RemoteStatus> {
   const state = readState();
   if (!state || state.state !== "connected") throw new Error("remote account is not connected");
-  const result = await remoteJson<{ profile: {
-    passwordSet: boolean;
-    canActivate: boolean;
-    instance: z.infer<typeof remoteInstanceSchema>;
-  } }>(state.controlPlaneUrl, "/api/v1/remote/activate", {
+  const result = await remoteJson<{ profile: z.input<typeof remoteProfileSchema> }>(state.controlPlaneUrl, "/api/v1/remote/activate", {
     method: "POST",
     headers: { authorization: `Bearer ${state.deviceToken}` },
     body: { name, slug },
   }, deps.fetchImpl ?? fetch);
-  const updated = connectedStateSchema.parse({ ...state, ...result.profile });
+  const updated = connectedStateSchema.parse({ ...state, ...remoteProfileSchema.parse(result.profile) });
   writeState(updated);
   return publicStatus(updated, true);
 }

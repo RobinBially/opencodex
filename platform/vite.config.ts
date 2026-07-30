@@ -9,6 +9,8 @@ export default defineConfig({
   build: { outDir: "dist", emptyOutDir: true },
   server: {
     port: 4173,
+    allowedHosts: [".opencodexpages.me"],
     proxy: { "/api": "http://127.0.0.1:10200" },
   },
+  preview: { allowedHosts: [".opencodexpages.me"] },
 });

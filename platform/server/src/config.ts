@@ -15,7 +15,9 @@ const envSchema = z.object({
   PLATFORM_CONTROL_PORT: z.coerce.number().int().min(1).max(65535).default(10200),
   PLATFORM_GATEWAY_PORT: z.coerce.number().int().min(1).max(65535).default(10201),
   PLATFORM_GATEWAY_HOST: z.string().default("127.0.0.1"),
+  PLATFORM_RELAY_URL: z.string().url().optional(),
   PLATFORM_DEV_AUTH_GITHUB_ID: z.string().regex(/^\d+$/).optional(),
+  PLATFORM_DEV_AUTO_APPROVE_DEVICE_LINKS: z.enum(["true", "false"]).default("false"),
   CLOUDFLARE_ACCOUNT_ID: z.string().optional(),
   CLOUDFLARE_ZONE_ID: z.string().optional(),
   CLOUDFLARE_AUTH_EMAIL: z.string().email().optional(),
@@ -39,6 +41,7 @@ function credential(name: string, envValue?: string): string | undefined {
 
 export interface PlatformConfig extends z.infer<typeof envSchema> {
   PLATFORM_DATABASE_URL: string;
+  PLATFORM_RELAY_URL: string;
   cloudflareApiToken?: string;
   cloudflareAuthEmail?: string;
   gatewayPrivateKeyPem: string;
@@ -70,6 +73,8 @@ export function loadPlatformConfig(env: NodeJS.ProcessEnv = process.env): Platfo
   return {
     ...parsed,
     PLATFORM_DATABASE_URL: databaseUrl,
+    PLATFORM_RELAY_URL: parsed.PLATFORM_RELAY_URL
+      ?? `wss://relay.${parsed.PLATFORM_INSTANCE_DOMAIN}/_ocxr/agent`,
     cloudflareApiToken: credential("cloudflare-api-token", env.CLOUDFLARE_API_TOKEN),
     cloudflareAuthEmail: credential("cloudflare-auth-email", env.CLOUDFLARE_AUTH_EMAIL),
     gatewayPrivateKeyPem,

@@ -2,6 +2,7 @@ mod assertion;
 mod config;
 mod control;
 mod proxy;
+mod relay;
 mod supervisor;
 
 use std::{path::PathBuf, process::Command as ProcessCommand};
@@ -41,6 +42,11 @@ enum Command {
     Run {
         #[arg(long, default_value = "/var/lib/opencodex-remote/agent.json")]
         config: PathBuf,
+    },
+    /// Run the unprivileged, outbound-only relay used by `ocx gui` Remote.
+    Relay {
+        #[arg(long, default_value_os_t = relay::default_remote_state_path())]
+        state: PathBuf,
     },
     PrepareNetwork {
         #[arg(long, default_value = "/var/lib/opencodex-remote/agent.json")]
@@ -143,6 +149,15 @@ async fn main() -> Result<()> {
                 result = tunnel => result.context("cloudflared supervisor failed")??,
             }
             shutdown.cancel();
+        }
+        Command::Relay { state } => {
+            let shutdown = CancellationToken::new();
+            let signal = shutdown.clone();
+            tokio::spawn(async move {
+                let _ = tokio::signal::ctrl_c().await;
+                signal.cancel();
+            });
+            relay::run(state, shutdown).await?;
         }
     }
     Ok(())

@@ -12,6 +12,21 @@ interface AppVariables {
   remoteDeviceId: string | null;
 }
 
+const e2eeEnvelopeSchema = z.object({
+  version: z.literal("ocx-e2ee-v1"),
+  salt: z.string().min(20).max(32),
+  nonce: z.string().min(16).max(24),
+  ciphertext: z.string().min(24).max(6_000),
+  rootPublicKey: z.string().min(40).max(256),
+  kdf: z.object({
+    algorithm: z.literal("argon2id"),
+    memoryKiB: z.number().int().min(32_768).max(262_144),
+    iterations: z.number().int().min(2).max(8),
+    parallelism: z.number().int().min(1).max(4),
+    outputLength: z.literal(32),
+  }),
+});
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "request failed";
 }
@@ -84,16 +99,48 @@ export function createControlPlaneApp(config: PlatformConfig, auth: PlatformAuth
         deviceName: z.string().trim().min(1).max(80),
         platform: z.string().trim().min(1).max(40),
         publicKey: z.string().min(40).max(512),
+        ecdhPublicKey: z.string().min(80).max(512).optional(),
       }).parse(await c.req.json());
       const networkSignal = c.req.header("cf-connecting-ip")
         ?? c.req.header("x-forwarded-for")?.split(",")[0]?.trim()
         ?? "unknown";
-      return c.json(await store.createDeviceAuthorization({
+      const deviceLink = await store.createDeviceAuthorization({
         deviceName: body.deviceName,
         platform: body.platform,
         publicKeyDer: Buffer.from(body.publicKey, "base64url"),
+        ecdhPublicKeyDer: body.ecdhPublicKey ? Buffer.from(body.ecdhPublicKey, "base64url") : undefined,
         networkSignal,
-      }), 201);
+      });
+      const requestOrigin = new URL(c.req.url);
+      const loopbackRequest = requestOrigin.protocol === "http:"
+        && ["127.0.0.1", "localhost"].includes(requestOrigin.hostname);
+      if (
+        config.NODE_ENV !== "production"
+        && config.PLATFORM_DEV_AUTO_APPROVE_DEVICE_LINKS === "true"
+        && loopbackRequest
+      ) {
+        // The client rejects cross-origin authorization URLs. Keep a local test
+        // entirely on loopback while the public response continues to use the
+        // configured HTTPS origin.
+        deviceLink.authorizeUrl = `${requestOrigin.origin}/connect/${deviceLink.id}`;
+      }
+      // [Decision Log]
+      // - 목적과 의도: 실제 GitHub OAuth 준비 전에도 로컬 OCX Remote 연결 전체 흐름을 한 번의 클릭으로 검증한다.
+      // - 기존 구현 및 제약 조건: 개발 계정 우회는 API actor만 제공해서 장치 승인 버튼을 별도로 눌러야 했고, 공개 배포에서는 절대 자동 승인되면 안 된다.
+      // - 검토한 주요 대안: 프런트엔드에서 승인 API 호출, 모든 개발 환경에서 무조건 자동 승인, 명시적인 서버 플래그.
+      // - 선택한 방식: non-production, 개발 actor, 명시적 auto-approve 플래그가 모두 존재할 때만 생성 직후 승인한다.
+      // - 다른 대안 대신 이 방식을 선택한 이유: 비밀이나 우회 토큰을 브라우저에 추가하지 않고 production의 GitHub 소유권 경계를 그대로 보존한다.
+      // - 장점, 단점 및 영향: 테스트는 한 번의 클릭으로 진행되지만 이 플래그를 켠 개발 배포는 접근 가능한 사람이 bootstrap 계정으로 장치를 등록할 수 있으므로 공개 운영에는 사용할 수 없다.
+      const actor = c.get("actor");
+      if (
+        config.NODE_ENV !== "production"
+        && config.PLATFORM_DEV_AUTH_GITHUB_ID
+        && config.PLATFORM_DEV_AUTO_APPROVE_DEVICE_LINKS === "true"
+        && actor
+      ) {
+        await store.approveDeviceAuthorization(actor, deviceLink.id);
+      }
+      return c.json(deviceLink, 201);
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 400);
     }
@@ -144,6 +191,50 @@ export function createControlPlaneApp(config: PlatformConfig, auth: PlatformAuth
     return c.json({ ok: true });
   });
 
+  app.put("/api/v1/remote/e2ee-profile", async c => {
+    const actor = await requireActor(c);
+    if (actor instanceof Response) return actor;
+    try {
+      const body = z.object({
+        authSecret: z.string().min(43).max(44),
+        envelope: e2eeEnvelopeSchema,
+      }).parse(await c.req.json());
+      await store.setRemoteE2eeProfile(actor, body.authSecret, body.envelope);
+      return c.json({ profile: await store.remoteProfile(actor) });
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 400);
+    }
+  });
+
+  app.post("/api/v1/remote/e2ee-profile/change", async c => {
+    const actor = await requireActor(c);
+    if (actor instanceof Response) return actor;
+    try {
+      const body = z.object({
+        oldAuthSecret: z.string().min(43).max(44),
+        newAuthSecret: z.string().min(43).max(44),
+        envelope: e2eeEnvelopeSchema,
+      }).parse(await c.req.json());
+      await store.changeRemoteE2eeProfile(actor, body.oldAuthSecret, body.newAuthSecret, body.envelope);
+      return c.json({ profile: await store.remoteProfile(actor) });
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 401);
+    }
+  });
+
+  app.post("/api/v1/devices/current/relay-credentials", async c => {
+    const actor = await requireActor(c);
+    if (actor instanceof Response) return actor;
+    const deviceId = requireRemoteDevice(c);
+    if (deviceId instanceof Response) return deviceId;
+    try {
+      const body = z.object({ ecdhPublicKey: z.string().min(80).max(512) }).parse(await c.req.json());
+      return c.json(await store.rotateRelayCredentials(actor, deviceId, Buffer.from(body.ecdhPublicKey, "base64url")), 201);
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 400);
+    }
+  });
+
   app.post("/api/v1/remote/activate", async c => {
     const actor = await requireActor(c);
     if (actor instanceof Response) return actor;
@@ -176,8 +267,13 @@ export function createControlPlaneApp(config: PlatformConfig, auth: PlatformAuth
     const actor = await requireActor(c);
     if (actor instanceof Response) return actor;
     try {
-      const body = z.object({ password: z.string().min(10).max(128) }).parse(await c.req.json());
-      return c.json({ url: await store.issueInstanceAuthorizationForSlug(actor, c.req.param("slug"), body.password) }, 201);
+      const body = z.object({
+        authSecret: z.string().min(43).max(44).optional(),
+        password: z.string().min(10).max(128).optional(),
+      }).refine(value => !!value.authSecret || !!value.password).parse(await c.req.json());
+      return c.json({
+        url: await store.issueInstanceAuthorizationForSlug(actor, c.req.param("slug"), body.authSecret ?? body.password ?? ""),
+      }, 201);
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 401);
     }

@@ -1,5 +1,7 @@
 # OpenCodex Remote 비공개 MVP 확정 구현 계획
 
+> 2026-07-30 변경: 신규 Remote workspace의 transport와 암호화 기준은 [ADR 0013](../../structure/adr/0013-remote-outbound-e2ee-relay.md)이다. 아래 Mesh 계획은 이미 배포된 private-MVP rollback 경로와 검증 기록으로만 유지한다.
+
 이 문서는 원 기획서 이후 확정된 구현 기준을 요약한다. 세부 제품 배경은 [PRODUCT_PLAN_v1.md](./PRODUCT_PLAN_v1.md), 현재 코드 상태는 [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md)를 따른다.
 
 ## 목표 구조

@@ -9,9 +9,11 @@ import {
   createInstance, createPairingCode, deleteInstance, getInstance, issueToken, listInstances,
   getCurrentUser, openInstance, redeemInvite, suspendInstance, getDeviceAuthorizationRequest,
   approveDeviceAuthorizationRequest, type CurrentUser, type DeviceAuthorizationRequest,
-  type Instance, type InstanceStatus, accessInstance,
+  type Instance, type InstanceStatus, accessInstance, getRemoteAccessProfile,
 } from "./api";
 import { authClient } from "./auth-client";
+import { unlockRemoteEnvelope } from "./e2ee";
+import { vaultHandoff, WorkspaceApp } from "./Workspace";
 
 type View = "instances" | "activity" | "security" | "new";
 const instanceDomain = import.meta.env.VITE_INSTANCE_DOMAIN ?? "opencodexpages.me";
@@ -265,7 +267,12 @@ function InstanceAccess({ slug }: { slug: string }) {
     setBusy(true);
     setError(null);
     try {
-      window.location.assign(await accessInstance(slug, password));
+      if (!user) throw new Error("GitHub sign-in is required");
+      const profile = await getRemoteAccessProfile();
+      if (!profile.e2ee) throw new Error("Set the encrypted Remote password from local ocx gui first");
+      const unlocked = await unlockRemoteEnvelope(password, user.githubNumericId, profile.e2ee);
+      const destination = await accessInstance(slug, unlocked.authSecret);
+      window.location.replace(`${destination}${vaultHandoff(unlocked.vault)}`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not open Remote");
     } finally {
@@ -283,7 +290,7 @@ function InstanceAccess({ slug }: { slug: string }) {
             <label className="access-password"><span>Remote password</span><input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && password.length >= 10) void unlock(); }} /></label>
             <button className="primary connect-action" disabled={busy || password.length < 10} onClick={unlock}>{busy ? "Opening…" : "Open Remote GUI"}</button></>}
     {error && <div className="form-error">{error}</div>}
-    <p className="connect-security"><IconShield />GitHub confirms account ownership. The Remote password is checked as an Argon2id hash and is never sent to the user computer.</p>
+    <p className="connect-security"><IconShield />Argon2id runs in this browser. The service receives a separate authentication secret, while the vault decryption key stays in this tab.</p>
   </section></div>;
 }
 
@@ -318,6 +325,15 @@ function AdminDashboard() {
 }
 
 export function App() {
+  const hostname = window.location.hostname.toLowerCase();
+  const suffix = `.${instanceDomain.toLowerCase()}`;
+  if (hostname.endsWith(suffix)) {
+    const slug = hostname.slice(0, -suffix.length);
+    if (/^[a-z0-9-]{1,63}$/.test(slug)) {
+      const centralOrigin = import.meta.env.VITE_PLATFORM_ORIGIN ?? `https://${instanceDomain}`;
+      return <WorkspaceApp slug={slug} centralOrigin={centralOrigin} />;
+    }
+  }
   const deviceMatch = window.location.pathname.match(/^\/connect\/([0-9a-f-]{36})$/i);
   if (deviceMatch) return <DeviceConnection requestId={deviceMatch[1]} />;
   const accessMatch = window.location.pathname.match(/^\/access\/([a-z0-9-]{1,63})$/i);

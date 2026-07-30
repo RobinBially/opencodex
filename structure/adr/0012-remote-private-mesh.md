@@ -1,6 +1,6 @@
 # ADR 0012: Remote access through a central Gateway and private Mesh routes
 
-- Status: accepted and central runtime deployed; public multi-user release remains blocked on signed Agent delivery and final operating E2E
+- Status: superseded for new Remote workspaces by ADR 0013; retained only as the deployed private-MVP rollback path
 - Date: 2026-07-30
 
 ## Context

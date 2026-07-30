@@ -38,7 +38,29 @@ const demo = import.meta.env.VITE_REMOTE_DEMO === "true";
 
 export interface CurrentUser {
   id: string; name: string; email: string; role: "user" | "admin";
+  githubNumericId: string;
   status: "active" | "pending_invite" | "suspended";
+}
+
+export interface RemoteAccessProfile {
+  passwordSet: boolean;
+  e2ee: import("./e2ee").RemoteE2eeEnvelope | null;
+}
+
+export interface WorkspaceDevice {
+  id: string;
+  name: string;
+  platform: string;
+  signingPublicKey: string;
+  ecdhPublicKey: string | null;
+  relayOnline: boolean;
+  lastSeenAt: string | null;
+}
+
+export interface Workspace {
+  instance: { id: string; name: string; slug: string; status: "online" | "offline" };
+  devices: WorkspaceDevice[];
+  limits: { maxSessionsPerDevice: number; maxFrameBytes: number };
 }
 
 export interface DeviceAuthorizationRequest {
@@ -76,8 +98,12 @@ export async function getInstance(instanceId: string): Promise<Instance> {
 }
 
 export async function getCurrentUser(): Promise<CurrentUser> {
-  if (demo) return { id: "demo-user", name: "Octo Cat", email: "octocat@example.test", role: "admin", status: "active" };
+  if (demo) return { id: "demo-user", name: "Octo Cat", email: "octocat@example.test", githubNumericId: "1", role: "admin", status: "active" };
   return (await request<{ user: CurrentUser }>("/api/v1/me")).user;
+}
+
+export async function getRemoteAccessProfile(): Promise<RemoteAccessProfile> {
+  return (await request<{ profile: RemoteAccessProfile }>("/api/v1/remote/profile")).profile;
 }
 
 export async function getDeviceAuthorizationRequest(id: string): Promise<DeviceAuthorizationRequest> {
@@ -120,11 +146,25 @@ export async function openInstance(instanceId: string, password: string): Promis
   })).url;
 }
 
-export async function accessInstance(slug: string, password: string): Promise<string> {
+export async function accessInstance(slug: string, authSecret: string): Promise<string> {
   return (await request<{ url: string }>(`/api/v1/remote/access/${encodeURIComponent(slug)}`, {
     method: "POST",
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ authSecret }),
   })).url;
+}
+
+export async function getWorkspace(): Promise<Workspace> {
+  return request<Workspace>("/api/v1/workspace");
+}
+
+export async function createTerminalSession(
+  deviceId: string,
+  commandProfile: import("./e2ee").CommandProfile,
+): Promise<{ session: { id: string }; websocketPath: string }> {
+  return request("/api/v1/terminal-sessions", {
+    method: "POST",
+    body: JSON.stringify({ deviceId, commandProfile }),
+  });
 }
 
 export async function issueToken(instanceId: string): Promise<{ token: string; expiresAt: string }> {

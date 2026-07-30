@@ -23,10 +23,21 @@ type RemoteStatus =
     account: { name: string; email: string; githubNumericId: string };
     passwordSet: boolean;
     canActivate: boolean;
+    relayReady: boolean;
+    devices: Array<{
+      id: string;
+      name: string;
+      platform: string;
+      relayOnline: boolean;
+      lastSeenAt: string | null;
+      instanceId: string | null;
+    }>;
+    agent?: { supported: boolean; running: boolean; pid?: number; error?: string };
     instance: {
       id: string;
       name: string;
       slug: string;
+      transportMode: "mesh-tunnel" | "outbound-relay";
       status: "pending" | "provisioning" | "awaiting_agent" | "connecting" | "online" | "degraded" | "offline" | "suspending" | "suspended" | "deleting" | "delete_failed" | "deleted";
       publicUrl: string;
     } | null;
@@ -44,7 +55,7 @@ function RemoteSteps({ status }: { status: RemoteStatus }) {
   const t = useT();
   const accountDone = status.state === "connected";
   const passwordDone = accountDone && status.passwordSet;
-  const tunnelDone = accountDone && status.instance !== null && ["online", "degraded"].includes(status.instance.status);
+  const tunnelDone = accountDone && status.instance !== null && status.agent?.running === true;
   return <div className="remote-steps" aria-label={t("remote.progressLabel")}>
     {[
       { label: t("remote.stepAccount"), done: accountDone, current: !accountDone },
@@ -64,9 +75,11 @@ export default function Remote({ apiBase }: { apiBase: string }) {
   const [error, setError] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newConfirmation, setNewConfirmation] = useState("");
   const [instanceName, setInstanceName] = useState("");
   const [slug, setSlug] = useState("");
-  const [pairing, setPairing] = useState<{ code: string; expiresAt: string } | null>(null);
 
   const refresh = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -90,7 +103,8 @@ export default function Remote({ apiBase }: { apiBase: string }) {
   useEffect(() => {
     const waitingForDevice = status?.state === "pending";
     const waitingForInstance = status?.state === "connected" && !!status.instance
-      && ["pending", "provisioning", "connecting"].includes(status.instance.status);
+      && (["pending", "provisioning", "connecting"].includes(status.instance.status)
+        || status.agent?.running !== true);
     if (!waitingForDevice && !waitingForInstance) return;
     const timer = window.setInterval(() => { void refresh(true); }, 2_000);
     return () => window.clearInterval(timer);
@@ -162,6 +176,28 @@ export default function Remote({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const changePassword = async () => {
+    if (newPassword.length < 10) { setError(t("remote.passwordLength")); return; }
+    if (newPassword !== newConfirmation) { setError(t("remote.passwordMismatch")); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await requestRemote(apiBase, "/api/remote/password", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ oldPassword, newPassword }),
+      });
+      setStatus(next);
+      setOldPassword("");
+      setNewPassword("");
+      setNewConfirmation("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("remote.passwordFailed"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const activate = async () => {
     const cleanSlug = slug.trim().toLowerCase();
     if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(cleanSlug)) {
@@ -183,11 +219,11 @@ export default function Remote({ apiBase }: { apiBase: string }) {
     }
   };
 
-  const prepareConnector = async () => {
+  const startAgent = async () => {
     setBusy(true);
     setError(null);
     try {
-      setPairing(await requestRemote<{ code: string; expiresAt: string }>(apiBase, "/api/remote/pairing-code", {
+      setStatus(await requestRemote(apiBase, "/api/remote/agent/start", {
         method: "POST",
       }));
     } catch (reason) {
@@ -207,7 +243,7 @@ export default function Remote({ apiBase }: { apiBase: string }) {
       : status?.state === "signed_out" ? <>
         <section className="panel panel-accent remote-hero">
           <div className="remote-hero-icon"><IconGlobe /></div><div><h3>{t("remote.signedOutTitle")}</h3><p>{t("remote.signedOutBody")}</p>
-          <button className="btn btn-primary" type="button" onClick={() => void startLogin()} disabled={busy}><IconGithub />{busy ? t("remote.starting") : t("remote.signIn")}</button></div>
+          <button className="btn btn-primary" type="button" onClick={() => void startLogin()} disabled={busy}><IconGlobe />{busy ? t("remote.starting") : t("remote.signIn")}</button></div>
         </section>
         <section className="remote-explain-grid">
           <div className="card remote-explain"><IconGithub /><strong>{t("remote.identityTitle")}</strong><span>{t("remote.identityBody")}</span></div>
@@ -215,7 +251,7 @@ export default function Remote({ apiBase }: { apiBase: string }) {
           <div className="card remote-explain"><IconGlobe /><strong>{t("remote.tunnelTitle")}</strong><span>{t("remote.tunnelBody")}</span></div>
         </section>
       </> : status?.state === "pending" ? <section className="panel remote-hero remote-pending">
-        <div className="remote-hero-icon"><IconGithub /></div><div><h3>{t("remote.pendingTitle")}</h3><p>{t("remote.pendingBody")}</p>
+        <div className="remote-hero-icon"><IconGlobe /></div><div><h3>{t("remote.pendingTitle")}</h3><p>{t("remote.pendingBody")}</p>
         <div className="remote-code"><span>{t("remote.codeLabel")}</span><strong>{status.userCode.match(/.{1,4}/g)?.join(" ")}</strong></div>
         <div className="remote-actions"><a className="btn btn-primary" href={status.authorizeUrl} target="_blank" rel="noreferrer"><IconExternal />{t("remote.openBrowser")}</a><button className="btn btn-ghost" type="button" onClick={() => void cancelLogin()} disabled={busy}>{t("common.cancel")}</button></div>
         <span className="remote-waiting" role="status">{t("remote.waiting")}</span></div>
@@ -233,12 +269,23 @@ export default function Remote({ apiBase }: { apiBase: string }) {
           </section> : ["pending", "provisioning"].includes(status.instance.status) ? <section className="panel panel-accent remote-hero remote-ready"><div className="remote-hero-icon"><IconRefresh /></div><div><h3>{t("remote.provisioningTitle")}</h3><p>{t("remote.provisioningBody")}</p><strong className="remote-address">{status.instance.publicUrl}</strong></div></section>
             : ["awaiting_agent", "offline"].includes(status.instance.status) ? <section className="panel remote-password-panel"><div className="panel-head"><IconTerminal /><div><h3>{t("remote.connectorTitle")}</h3><p>{t("remote.connectorBody")}</p></div></div>
               <strong className="remote-address">{status.instance.publicUrl}</strong>
-              {pairing ? <div className="remote-code"><span>{t("remote.pairingCode")}</span><strong>{pairing.code.match(/.{1,4}/g)?.join(" ")}</strong></div> : null}
-              <div className="remote-actions"><button className="btn btn-primary" type="button" onClick={() => void prepareConnector()} disabled={busy}>{busy ? t("remote.preparingConnector") : t("remote.prepareConnector")}</button></div>
+              <div className="remote-actions"><button className="btn btn-primary" type="button" onClick={() => void startAgent()} disabled={busy || status.agent?.running}>{busy ? t("remote.preparingConnector") : t("remote.prepareConnector")}</button></div>
+              {status.agent?.error ? <Notice tone="err">{status.agent.error}</Notice> : null}
               <span className="remote-next-note">{t("remote.connectorRequirement")}</span>
             </section> : status.instance.status === "connecting" ? <section className="panel panel-accent remote-hero remote-ready"><div className="remote-hero-icon"><IconRefresh /></div><div><h3>{t("remote.connectingTitle")}</h3><p>{t("remote.connectingBody")}</p><strong className="remote-address">{status.instance.publicUrl}</strong></div></section>
               : ["online", "degraded"].includes(status.instance.status) ? <section className="panel panel-accent remote-hero remote-ready"><div className="remote-hero-icon"><IconCheck /></div><div><h3>{t("remote.readyTitle")}</h3><p>{t("remote.readyBody")}</p><a className="btn btn-primary remote-open" href={status.instance.publicUrl} target="_blank" rel="noreferrer"><IconExternal />{t("remote.openRemote")}</a></div></section>
                 : <section className="panel remote-password-panel"><div className="panel-head"><IconGlobe /><div><h3>{t("remote.unavailableTitle")}</h3><p>{t("remote.unavailableBody")}</p></div></div></section>}
+        {status.passwordSet ? <>
+          <section className="panel remote-password-panel remote-device-panel"><div className="panel-head"><IconTerminal /><div><h3>{t("remote.devicesTitle")}</h3><p>{t("remote.devicesBody")}</p></div></div>
+            <div className="remote-device-list">{status.devices.map(device => <div className="remote-device-row" key={device.id}><span className={device.relayOnline ? "is-online" : ""} /><div><strong>{device.name}</strong><small>{device.platform}</small></div><em>{device.relayOnline ? "Online" : "Offline"}</em></div>)}</div>
+          </section>
+          <section className="panel remote-password-panel"><div className="panel-head"><IconLock /><div><h3>{t("remote.changePasswordTitle")}</h3><p>{t("remote.changePasswordBody")}</p></div></div>
+            <div className="remote-password-grid"><label><span>{t("remote.currentPassword")}</span><input className="input" type="password" autoComplete="current-password" value={oldPassword} onChange={event => setOldPassword(event.target.value)} /></label>
+              <label><span>{t("remote.newPassword")}</span><input className="input" type="password" autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)} /></label>
+              <label><span>{t("remote.confirmNewPassword")}</span><input className="input" type="password" autoComplete="new-password" value={newConfirmation} onChange={event => setNewConfirmation(event.target.value)} /></label></div>
+            <div className="remote-actions"><button className="btn btn-ghost" type="button" onClick={() => void changePassword()} disabled={busy || !oldPassword || !newPassword}>{busy ? t("common.saving") : t("remote.changePassword")}</button></div>
+          </section>
+        </> : null}
       </> : null}
   </div>;
 }

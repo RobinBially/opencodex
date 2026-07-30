@@ -1,12 +1,18 @@
 import {
   activateRemoteInstance,
   cancelRemoteLink,
+  changeRemotePassword,
   createRemotePairingCode,
   disconnectRemoteDevice,
   getRemoteStatus,
   setRemotePassword,
   startRemoteLink,
 } from "../../remote/client";
+import {
+  remoteRelayAgentStatus,
+  startRemoteRelayAgent,
+  stopRemoteRelayAgent,
+} from "../../remote/agent";
 import { jsonResponse } from "../auth-cors";
 import type { ManagementContext } from "./context";
 
@@ -17,7 +23,7 @@ function errorMessage(error: unknown): string {
 export async function handleRemoteRoutes(ctx: ManagementContext): Promise<Response | null> {
   const { req, url, config } = ctx;
   if (url.pathname === "/api/remote/status" && req.method === "GET") {
-    return jsonResponse(await getRemoteStatus(), 200, req, config);
+    return jsonResponse({ ...await getRemoteStatus(), agent: remoteRelayAgentStatus() }, 200, req, config);
   }
   if (url.pathname === "/api/remote/link" && req.method === "POST") {
     try {
@@ -33,7 +39,22 @@ export async function handleRemoteRoutes(ctx: ManagementContext): Promise<Respon
     try {
       const body = await req.json() as { password?: unknown };
       if (typeof body.password !== "string") throw new Error("remote password is required");
-      return jsonResponse(await setRemotePassword(body.password), 200, req, config);
+      const status = await setRemotePassword(body.password);
+      const agent = status.state === "connected" && status.instance
+        ? await startRemoteRelayAgent()
+        : remoteRelayAgentStatus();
+      return jsonResponse({ ...status, agent }, 200, req, config);
+    } catch (error) {
+      return jsonResponse({ error: errorMessage(error) }, 400, req, config);
+    }
+  }
+  if (url.pathname === "/api/remote/password" && req.method === "PATCH") {
+    try {
+      const body = await req.json() as { oldPassword?: unknown; newPassword?: unknown };
+      if (typeof body.oldPassword !== "string" || typeof body.newPassword !== "string") {
+        throw new Error("old and new remote passwords are required");
+      }
+      return jsonResponse(await changeRemotePassword(body.oldPassword, body.newPassword), 200, req, config);
     } catch (error) {
       return jsonResponse({ error: errorMessage(error) }, 400, req, config);
     }
@@ -44,10 +65,16 @@ export async function handleRemoteRoutes(ctx: ManagementContext): Promise<Respon
       if (typeof body.name !== "string" || typeof body.slug !== "string") {
         throw new Error("remote name and domain are required");
       }
-      return jsonResponse(await activateRemoteInstance(body.name, body.slug), 202, req, config);
+      const status = await activateRemoteInstance(body.name, body.slug);
+      const agent = await startRemoteRelayAgent();
+      return jsonResponse({ ...status, agent }, 202, req, config);
     } catch (error) {
       return jsonResponse({ error: errorMessage(error) }, 400, req, config);
     }
+  }
+  if (url.pathname === "/api/remote/agent/start" && req.method === "POST") {
+    const agent = await startRemoteRelayAgent();
+    return jsonResponse({ ...await getRemoteStatus(), agent }, agent.running ? 200 : 409, req, config);
   }
   if (url.pathname === "/api/remote/pairing-code" && req.method === "POST") {
     try {
@@ -58,7 +85,8 @@ export async function handleRemoteRoutes(ctx: ManagementContext): Promise<Respon
   }
   if (url.pathname === "/api/remote/device" && req.method === "DELETE") {
     try {
-      return jsonResponse(await disconnectRemoteDevice(), 200, req, config);
+      stopRemoteRelayAgent();
+      return jsonResponse({ ...await disconnectRemoteDevice(), agent: remoteRelayAgentStatus() }, 200, req, config);
     } catch (error) {
       return jsonResponse({ error: errorMessage(error) }, 502, req, config);
     }

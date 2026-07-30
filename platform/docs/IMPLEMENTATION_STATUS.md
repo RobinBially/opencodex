@@ -8,6 +8,21 @@
 
 이 문서는 다른 컴퓨터에서 작업을 바로 이어가기 위한 현재 상태의 기준 문서다. PostgreSQL 17과 실제 Control Plane·worker·Gateway 프로세스를 사용하는 로컬 통합 검증을 완료했고, 2026-07-30 기존 TeamWicked Oracle VPS에 중앙 bootstrap runtime과 `opencodexpages.me` public ingress를 배포했다. 실제 Cloudflare account의 Linux Mesh/private-hostname transport와 Rust Agent 포함 30분 stream은 통과했지만 실제 OpenCodex process를 포함한 public 운영 E2E는 아직 완료되지 않았다.
 
+## 2026-07-30 outbound E2EE relay 전환 작업
+
+신규 제품 경로는 [ADR 0013](../../structure/adr/0013-remote-outbound-e2ee-relay.md)으로 변경했다. 이 변경은 현재 `ingw/remote-private-mvp-handoff` worktree에만 있고 운영 중앙 서버와 `dev`에는 배포하지 않았다.
+
+- 계정당 주소 하나와 여러 `remote_devices`를 workspace로 사용한다.
+- `0003_outbound_e2ee_relay.sql`이 E2EE envelope, device Relay credential/presence, terminal session을 추가한다.
+- local OCX는 Argon2id + separated HKDF + AES-GCM vault를 만들고 이전 비밀번호를 확인한 로컬 rewrap을 지원한다.
+- Gateway는 `relay.opencodexpages.me/_ocxr/agent` outbound WSS와 wildcard workspace API/WS를 제공하며 DB-per-frame 없이 최대 64 KiB 암호문만 전달한다.
+- Rust `relay` command는 현재 사용자 권한의 portable PTY, 상호 서명 ephemeral P-256 handshake, 방향별 AES-GCM counter를 구현한다.
+- wildcard web workspace는 xterm.js에서 Shell/Codex/Claude profile을 열고 브라우저-Agent 사이 E2EE를 수행한다.
+- 기존 Mesh instance는 새 E2EE password를 설정할 때 slug를 보존해 `outbound-relay`로 전환한다. 기존 Cloudflare resource cleanup은 자동으로 수행하지 않는다.
+- 로컬 GUI는 연결 컴퓨터, Relay 상태, 이전 비밀번호가 필요한 암호화 password 변경, 사전 빌드 Agent 시작을 표시한다.
+
+현재 검증: root/platform typecheck, GUI/platform production build와 lint, Rust check/build와 6 unit tests, root 전체 `6035 pass / 2 skip / 0 fail`을 통과했다. PostgreSQL 17에 `0003`까지 적용한 통합 테스트는 실제 Gateway, Rust Agent, WebCrypto client, `/bin/sh` portable PTY를 연결해 암호화한 `OCXR_RELAY_OK` 왕복과 누락된 immutable asset의 404 경계까지 `1 test / 87 expects`로 3회 연속 통과했다. 로컬 GUI와 wildcard workspace는 Playwright viewport에서 수평 overflow 없이 확인했다. 아직 남은 release 차단 조건은 signed multi-platform Agent packaging, 실제 Codex/Claude CLI를 포함한 public 운영 E2E, 운영 backup/deploy/rollback이다. 이 코드는 운영 중앙 서버와 `dev`에 배포하지 않았다.
+
 ## 문서와 디자인 자산
 
 - 원 기획서: [PRODUCT_PLAN_v1.md](./PRODUCT_PLAN_v1.md)
@@ -147,11 +162,11 @@
 
 ## 구현 중인 부분
 
-- 실제 Rust Agent와 OpenCodex를 포함한 Gateway WebSocket/client disconnect E2E.
-- 실제 OpenCodex process를 포함한 E2E와 Gateway 프로세스 재시작 측정. Mesh transport/Rust Agent 30분과 Tunnel 재시작은 완료.
+- 실제 Codex/Claude CLI 프로세스를 포함한 outbound E2EE terminal E2E. `/bin/sh` PTY 암호화 왕복은 완료했다.
+- outbound Gateway 프로세스 재시작 시 Agent/browser 재접속 측정. 기존 Mesh transport/Rust Agent 30분과 Tunnel 재시작은 완료.
 - suspend/delete saga의 Cloudflare 부분 실패 재시도와 orphan reconciliation.
 - Agent 설치·OpenCodex 설정 반영을 한 번에 수행하는 서명 검증 installer.
-- UI의 실제 브라우저 시각 QA. 현재 상태는 루트 [design-qa.md](../../design-qa.md)에 기록했다.
+- UI의 keyboard/focus/reduced-motion/zoom 접근성 브라우저 QA. 기본 viewport 시각 QA와 overflow 검사는 완료했다.
 
 ## 남은 부분
 
@@ -205,7 +220,7 @@ PASS  bun run typecheck                         (root)
 PASS  bun test tests/server-management-auth.test.ts
       16 tests / 56 expects
 PASS  bun test --isolate tests
-      6033 pass / 2 skip / 0 fail / 30570 expects
+      6035 pass / 2 skip / 0 fail / 30582 expects
 PASS  bun run privacy:scan
 PASS  cd gui && bun run lint && bun test tests && bun run build && bun run doctor
       385 pass / 0 fail / 1663 expects; React Doctor 0 issues
@@ -218,12 +233,14 @@ PASS  cd platform && CLOUDFLARE_LIVE_TESTS=true ... \
 PASS  cd platform && VITE_REMOTE_DEMO=true bun run build:web
 PASS  cd platform && PLATFORM_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55432/postgres \
       bun test server/tests/postgres-integration.test.ts
-      1 test / 74 expects, PostgreSQL 17.10
+      1 test / 87 expects, PostgreSQL 17; real Gateway + Rust Agent + WebCrypto + PTY relay
 PASS  cd remote-agent && cargo fmt --check
 PASS  cd remote-agent && cargo check
 PASS  cd remote-agent && cargo clippy --all-targets --all-features -- -D warnings
 PASS  cd remote-agent && cargo test
-      3 Rust unit tests
+      6 Rust unit tests
+PASS  Playwright visual smoke
+      local Remote GUI and wildcard workspace; no horizontal overflow
 PASS  cd docs-site && bun run build
       146 pages with localized Remote GUI and CLI documentation
 ```
