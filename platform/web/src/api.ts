@@ -57,6 +57,15 @@ export async function listInstances(): Promise<Instance[]> {
   return (await request<{ instances: Instance[] }>("/api/v1/instances")).instances;
 }
 
+export async function getInstance(instanceId: string): Promise<Instance> {
+  if (demo) {
+    const instance = demoInstances.find(item => item.id === instanceId);
+    if (!instance) throw new Error("not found");
+    return structuredClone(instance);
+  }
+  return (await request<{ instance: Instance }>(`/api/v1/instances/${instanceId}`)).instance;
+}
+
 export async function getCurrentUser(): Promise<CurrentUser> {
   if (demo) return { id: "demo-user", name: "Octo Cat", email: "octocat@example.test", role: "admin", status: "active" };
   return (await request<{ user: CurrentUser }>("/api/v1/me")).user;

@@ -6,13 +6,14 @@ import {
   IconPlus, IconServer2, IconShield, IconTerminal2, IconTrash, IconX,
 } from "@tabler/icons-react";
 import {
-  createInstance, createPairingCode, deleteInstance, issueToken, listInstances,
+  createInstance, createPairingCode, deleteInstance, getInstance, issueToken, listInstances,
   getCurrentUser, openInstance, redeemInvite, suspendInstance, type CurrentUser,
   type Instance, type InstanceStatus,
 } from "./api";
 import { authClient } from "./auth-client";
 
 type View = "instances" | "activity" | "security" | "new";
+const instanceDomain = import.meta.env.VITE_INSTANCE_DOMAIN ?? "opencodexpages.me";
 
 const statusCopy: Record<InstanceStatus, string> = {
   pending: "Pending", provisioning: "Provisioning", awaiting_agent: "Awaiting agent",
@@ -57,7 +58,7 @@ function HealthNode({ icon: Icon, title, value, ok = true }: { icon: typeof Icon
 
 function Detail({ instance, onChanged }: { instance: Instance; onChanged: () => Promise<void> }) {
   const [notice, setNotice] = useState<string | null>(null);
-  const hostname = `${instance.slug}.${import.meta.env.VITE_INSTANCE_DOMAIN ?? "ocx.run"}`;
+  const hostname = `${instance.slug}.${instanceDomain}`;
   const healthy = instance.status === "online";
 
   async function copy(value: string, message: string) {
@@ -110,7 +111,7 @@ function Instances({ instances, selected, select, refresh, newInstance }: { inst
         <div className="table-head"><span>Name</span><span>Hostname</span><span>Status</span><span>Last seen</span></div>
         {instances.map(instance => <button key={instance.id} className={`instance-row ${selected?.id === instance.id ? "selected" : ""}`} onClick={() => select(instance.id)}>
           <span className="instance-name"><span className={`tiny-dot status-${instance.status}`} />{instance.name}</span>
-          <span>{instance.slug}.ocx.run</span><Status value={instance.status} /><span>{relativeTime(instance.updatedAt)}</span>
+          <span>{instance.slug}.{instanceDomain}</span><Status value={instance.status} /><span>{relativeTime(instance.updatedAt)}</span>
         </button>)}
         {!instances.length && <div className="empty"><IconServer2 /><strong>No instances yet</strong><span>Create a private endpoint for your Linux server.</span><button className="primary" onClick={newInstance}>New instance</button></div>}
       </section>
@@ -131,6 +132,7 @@ function NewInstance({ onCancel, onCreated }: { onCancel: () => void; onCreated:
   const [pairing, setPairing] = useState<{ code: string; expiresAt: string } | null>(null);
   const [seconds, setSeconds] = useState(600);
   const [error, setError] = useState<string | null>(null);
+  const [reserving, setReserving] = useState(false);
   const command = `curl -fsSL https://install.ocx.run/agent.sh | sudo sh`;
 
   useEffect(() => {
@@ -141,12 +143,24 @@ function NewInstance({ onCancel, onCreated }: { onCancel: () => void; onCreated:
 
   async function reserve() {
     setError(null);
+    setReserving(true);
     try {
       const created = await createInstance(name, slug);
       setInstance(created);
-      const code = await createPairingCode(created.id);
+      let ready = created;
+      for (let attempt = 0; attempt < 60 && ready.status !== "awaiting_agent"; attempt += 1) {
+        await new Promise(resolve => window.setTimeout(resolve, 1_000));
+        ready = await getInstance(created.id);
+        if (["delete_failed", "deleted", "suspended"].includes(ready.status)) {
+          throw new Error(`Provisioning stopped with status ${ready.status}`);
+        }
+      }
+      if (ready.status !== "awaiting_agent") throw new Error("Provisioning is still running; try again shortly");
+      setInstance(ready);
+      const code = await createPairingCode(ready.id);
       setPairing(code); setStep(2);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not create instance"); }
+    finally { setReserving(false); }
   }
   async function verify() { setStep(3); await onCreated(); }
   const time = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
@@ -155,12 +169,12 @@ function NewInstance({ onCancel, onCreated }: { onCancel: () => void; onCreated:
     <section className="onboarding-card">
       {step === 1 ? <div className="instance-form">
         <label>Instance name<input value={name} onChange={event => { setName(event.target.value); setSlug(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-")); }} /></label>
-        <label>Address<div className="address-input"><input value={slug} onChange={event => setSlug(event.target.value.toLowerCase())} /><span>.ocx.run</span></div></label>
+        <label>Address<div className="address-input"><input value={slug} onChange={event => setSlug(event.target.value.toLowerCase())} /><span>.{instanceDomain}</span></div></label>
         <p>Choose a stable name for your private OpenCodex instance.</p>
         {error && <div className="form-error">{error}</div>}
-        <div className="footer-actions"><button onClick={onCancel}>Cancel</button><button className="primary" onClick={reserve}>Reserve instance</button></div>
+        <div className="footer-actions"><button onClick={onCancel} disabled={reserving}>Cancel</button><button className="primary" onClick={reserve} disabled={reserving}>{reserving ? "Provisioning…" : "Reserve instance"}</button></div>
       </div> : step === 2 ? <>
-        <div className="reserved"><label>Instance name<input readOnly value={instance?.name ?? name} /></label><label>Address<input readOnly value={`${instance?.slug ?? slug}.ocx.run`} /></label><p>We’ve reserved this hostname for your new private instance.</p></div>
+        <div className="reserved"><label>Instance name<input readOnly value={instance?.name ?? name} /></label><label>Address<input readOnly value={`${instance?.slug ?? slug}.${instanceDomain}`} /></label><p>We’ve reserved this hostname for your new private instance.</p></div>
         <div className="install-grid"><div className="install-column"><h2>Install the Linux Agent</h2><p>Run this command on the server where OpenCodex is installed.</p><pre>{command}</pre><button className="copy-command" onClick={() => navigator.clipboard.writeText(command)}><IconClipboard />Copy command</button><hr /><h2>Pair this Agent</h2><p>Enter this code when prompted by the agent.</p><div className="pairing-code"><strong>{pairing?.code.match(/.{1,4}/g)?.join("-")}</strong><span>◷ Expires in {time}</span></div><p>The code can be used once and does not contain a long-lived credential.</p></div>
           <div className="verify-column"><h2>Verify</h2><p>We’ll check the connection once the agent is paired.</p>{[[IconBox,"OpenCodex detected"],[IconTerminal2,"Agent authenticated"],[IconLink,"Tunnel connected"],[IconGlobe,"Gateway health check"]].map(([Icon,label]) => <div className="verify-row" key={label as string}><span><Icon /></span><strong>{label as string}</strong><em>● &nbsp;Waiting</em></div>)}</div></div>
         <div className="footer-actions"><button onClick={onCancel}>Cancel</button><button className="primary" onClick={verify}>I’ve paired the Agent</button></div>

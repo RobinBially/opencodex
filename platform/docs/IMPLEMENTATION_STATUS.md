@@ -6,7 +6,7 @@
 
 기준 브랜치/커밋: `dev` / `67c731e6`
 
-이 문서는 다른 컴퓨터에서 작업을 바로 이어가기 위한 현재 상태의 기준 문서다. PostgreSQL 17과 실제 Control Plane·worker·Gateway 프로세스를 사용하는 로컬 통합 검증은 완료됐다. 실제 Cloudflare account의 Linux Mesh/private-hostname transport와 Rust Agent 포함 30분 stream은 통과했고, 실제 OpenCodex process 및 public ingress를 포함한 운영 E2E는 아직 완료되지 않았다.
+이 문서는 다른 컴퓨터에서 작업을 바로 이어가기 위한 현재 상태의 기준 문서다. PostgreSQL 17과 실제 Control Plane·worker·Gateway 프로세스를 사용하는 로컬 통합 검증을 완료했고, 2026-07-30 기존 TeamWicked Oracle VPS에 중앙 bootstrap runtime과 `opencodexpages.me` public ingress를 배포했다. 실제 Cloudflare account의 Linux Mesh/private-hostname transport와 Rust Agent 포함 30분 stream은 통과했지만 실제 OpenCodex process를 포함한 public 운영 E2E는 아직 완료되지 않았다.
 
 ## 문서와 디자인 자산
 
@@ -123,13 +123,24 @@
 - 실제 Rust Agent 포함 30분 SSE도 rc 0, 1,800초, 정확히 1,800 events로 통과.
 - 재현 절차와 실패 원인은 [CLOUDFLARE_PHASE0_2026-07-30.md](./CLOUDFLARE_PHASE0_2026-07-30.md)에 기록.
 
+### 중앙 VPS bootstrap 배포
+
+- `opencodexpages.me` → dedicated Cloudflare Tunnel → Control Plane/UI `127.0.0.1:10200` 구성.
+- `*.opencodexpages.me` → 같은 Tunnel → isolated Mesh namespace의 Gateway `127.0.0.1:10201` 구성 및 Universal SSL 확인.
+- `ocxr` 전용 사용자와 systemd 여섯 서비스 추가: PostgreSQL, Control Plane, worker, Mesh, Gateway, public Tunnel.
+- PostgreSQL 17, Mesh, Gateway를 `ocxr-net`에 격리해 기존 VPS host routing과 DNS를 보존.
+- root-only systemd credentials와 `/etc/opencodex-remote/cloudflare-state.json` 운영 state 구성.
+- apex는 exact-email Cloudflare Access OTP로 닫고 내부 numeric GitHub ID bootstrap은 한 명에게만 허용.
+- 실제 worker가 테스트 인스턴스의 Tunnel·DNS·CIDR·hostname route 네 리소스를 생성하고 delete saga가 모두 회수하는지 확인.
+- public apex health/UI/asset, wildcard TLS와 무자격 `404`, Mesh 연결 상태를 운영 경로에서 확인.
+- 실제 리소스 ID와 재시작/점검 절차는 [PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md)에 기록.
+
 ## 구현 중인 부분
 
 - 실제 Rust Agent와 OpenCodex를 포함한 Gateway WebSocket/client disconnect E2E.
 - 실제 OpenCodex process를 포함한 E2E와 Gateway 프로세스 재시작 측정. Mesh transport/Rust Agent 30분과 Tunnel 재시작은 완료.
 - suspend/delete saga의 Cloudflare 부분 실패 재시도와 orphan reconciliation.
 - Agent 설치·OpenCodex 설정 반영을 한 번에 수행하는 서명 검증 installer.
-- 네이티브 systemd 서비스와 `LoadCredential=` 배포 파일.
 - UI의 실제 브라우저 시각 QA. 현재 상태는 루트 [design-qa.md](../../design-qa.md)에 기록했다.
 
 ## 남은 부분
@@ -145,7 +156,7 @@
 
 ### P1 — 운영 기능
 
-- native systemd unit 3개와 중앙 `cloudflared`, Linux Mesh node unit 작성.
+- [x] native/isolated hybrid systemd unit 여섯 개와 중앙 `cloudflared`, Linux Mesh node 배포.
 - Agent `amd64`/`arm64` musl release workflow.
 - Agent binary와 installer의 SHA-256 + Ed25519 detached signature 검증.
 - suspend 시 hostname/CIDR/DNS를 먼저 제거하고 Cloudflare connector-cleanup API로 모든 연결을 끊은 뒤 Tunnel을 삭제하는 흐름을 실제 활성 Agent에서 확인했다.
@@ -154,7 +165,8 @@
 - Gateway rate limit, 동시 연결/본문 크기 정책, abuse report/admin UI 추가.
 - audit 조회·90일 retention job, 일일 암호화 backup, 7일/4주 retention, restore drill 추가.
 - gateway signing key rotation과 Agent key rotation 구현.
-- 실제 인스턴스 domain과 official domain 설정 후 쿠키/OAuth callback 검증.
+- [x] public instance domain `*.opencodexpages.me`, apex ingress, wildcard TLS 구성.
+- dedicated GitHub OAuth app 생성 후 production callback과 multi-user cookie 경계 검증. 현재는 exact-email Access OTP single-user bootstrap이다.
 
 ### P2 — 제품 마감
 
@@ -171,10 +183,10 @@
 - 원 기획서의 Workers VPC/fallback보다 이후 확정안인 Cloudflare Mesh private hostname route가 우선한다. Mesh 실패 시 자동 fallback하지 않는다.
 - private hostname은 `127.0.0.1` hosts가 아니라 DNS-only RFC1918 A record를 사용한다. Agent `prepare-network`는 구현했지만 installer/systemd의 privileged `ExecStartPre`와 비특권 runtime unit은 아직 미구현이다.
 - Cloudflare Tunnel, DNS, CIDR route, hostname route create/delete와 token GET 응답 shape를 live account로 검증했다.
-- Gateway synthetic token은 별도 systemd credential로 설계했지만 배포 파일은 아직 없다.
+- Gateway synthetic token과 signing key를 포함한 credential은 root-only systemd/container credential mount로 배포했다.
 - Better Auth의 OAuth account에는 GitHub access token이 저장될 수 있다. 운영 전 DB encryption/토큰 최소 보존 정책을 확정해야 한다.
 - Gateway와 Rust Agent는 100 MiB 양방향 streaming, SSE/WS, 30분 stream을 통과했다. 실제 OpenCodex process와 public ingress를 포함한 부하·backpressure는 아직 측정하지 않았다.
-- private `opencodexpages.me` DNS record는 Phase 0에서 검증했다. public wildcard ingress, TLS, official `opencodex.me`와 instance `opencodexpages.me` 쿠키/OAuth 분리는 아직 구성하지 않았다.
+- private transport DNS는 Phase 0에서 검증했고 public wildcard ingress와 TLS도 운영 배포에서 확인했다. dedicated GitHub OAuth app이 없어 `opencodex.me`와 `opencodexpages.me`의 production OAuth/cookie 분리는 아직 검증하지 않았다.
 
 ## 현재까지 확인된 검증
 
@@ -202,12 +214,19 @@ PASS  cd remote-agent && cargo test
       3 Rust unit tests
 ```
 
+운영 bootstrap에서 추가로 통과한 항목:
+
+- systemd 여섯 서비스 enabled/active와 재시작 후 health
+- public apex Access redirect, service-token 기반 health/UI/asset 200 검증 후 임시 token/policy 삭제
+- public first-level wildcard TLS와 무자격 404
+- production worker create/delete Cloudflare 리소스 회수
+
 아직 통과로 간주하면 안 되는 항목:
 
 - 실제 Gateway 프로세스 재시작 측정
 - 실제 OpenCodex process와 public ingress를 포함한 HTTP/SSE/WebSocket 운영 E2E
 - 시각 QA와 접근성 브라우저 QA
-- systemd/VPS/backup restore 검증
+- PostgreSQL backup/restore drill
 
 ## 다른 컴퓨터에서 재개
 

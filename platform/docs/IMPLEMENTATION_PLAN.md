@@ -17,7 +17,7 @@ Browser / CLI
 - 사용자 Tunnel에는 공개 hostname을 만들지 않는다.
 - `*.instance-domain`은 언제나 중앙 Gateway로 향한다.
 - Gateway만 DB의 추측 불가능한 private hostname을 목적지로 사용한다.
-- 중앙 시스템은 Docker 없이 Ubuntu 24.04 VPS의 native systemd로 운영한다.
+- 중앙 Control Plane과 worker는 전용 `ocxr` 사용자로 native systemd 운영한다. 공유 VPS의 host routing을 보호하기 위해 PostgreSQL, Cloudflare Mesh, Gateway는 별도 Docker network namespace에 격리하고 모두 systemd가 수명주기를 관리한다.
 - private hostname은 `*.private.remote.opencodexpages.me` DNS-only A record로 인스턴스별 `10.192.0.0/10` `/32`를 가리킨다.
 - 같은 `/32` CIDR activation route와 hostname route를 dedicated Tunnel에 연결하며, Agent는 그 주소를 `lo`에만 할당한다.
 
@@ -28,6 +28,14 @@ Browser / CLI
 - 선택한 방식: DNS record 생성 후 `/32` activation route와 hostname route를 만들고 Agent가 alias를 loopback에 bind한다.
 - 다른 대안 대신 이 방식을 선택한 이유: public service exposure 없이 Mesh synthetic IP와 Tunnel origin resolution이 모두 통과했다.
 - 장점, 단점 및 영향: provisioning/deletion saga가 네 Cloudflare 리소스를 다룬다. 별도 `prepare-network` 단계만 root 또는 `CAP_NET_ADMIN`이 필요하고 장시간 Agent runtime은 비특권으로 실행한다.
+
+[Decision Log]
+- 목적과 의도: 기존 TeamWicked 서비스가 함께 있는 중앙 VPS에 Mesh를 배포하되 host network namespace의 route와 DNS를 바꾸지 않는다.
+- 기존 구현 및 제약 조건: 초기 문서는 중앙 구성요소 전체를 native systemd로 가정했지만 Cloudflare Mesh client는 kernel route와 resolver를 관리한다.
+- 검토한 주요 대안: host-native Mesh, 별도 VPS, 모든 구성요소의 containerization, Mesh와 Gateway만 network namespace를 공유하는 hybrid 배포.
+- 선택한 방식: Control Plane과 worker는 native로 유지하고 PostgreSQL·Mesh·Gateway를 고정 Docker network에 격리하며 systemd가 여섯 서비스를 관리한다.
+- 다른 대안 대신 이 방식을 선택한 이유: 기존 VPS의 Cloudflare Tunnels와 management traffic을 변경하지 않으면서 Gateway만 Mesh 경로를 사용할 수 있다.
+- 장점, 단점 및 영향: host 영향 범위가 작고 재시작 경계가 명확하지만 Docker가 운영 의존성에 추가되며 Gateway는 Mesh 컨테이너와 함께 재시작해야 한다.
 
 ## 보안 기준
 

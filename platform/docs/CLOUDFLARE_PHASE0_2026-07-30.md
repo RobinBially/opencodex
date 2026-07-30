@@ -4,7 +4,7 @@
 
 실제 Cloudflare account와 `opencodexpages.me` zone에서 Linux Cloudflare Mesh node → private hostname route → dedicated Cloudflare Tunnel → RFC1918 origin 경로가 통과했다. 일반 WARP client만이 아니라 central Gateway 역할의 headless Mesh node에서도 확인했다.
 
-Phase 0에서 확정된 private instance domain은 `*.private.remote.opencodexpages.me`다. 사용자 공개 instance domain은 `<slug>.remote.opencodexpages.me`로 예약하지만 중앙 public ingress 배포 전에는 wildcard DNS를 만들지 않는다.
+Phase 0에서 확정된 private instance domain은 `*.private.remote.opencodexpages.me`다. 2026-07-30 운영 ingress에서는 Cloudflare Universal SSL이 바로 지원하는 `<slug>.opencodexpages.me`를 공개 instance domain으로 확정했다. 중첩 wildcard인 `<slug>.remote.opencodexpages.me`는 별도 인증서가 필요해 사용하지 않는다.
 
 ## 필수 구성
 

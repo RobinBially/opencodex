@@ -206,7 +206,7 @@ async function authenticate(req: Request): Promise<{ instance: InstanceRecord; u
 
 gatewayServer = Bun.serve<SocketData>({
   port: config.PLATFORM_GATEWAY_PORT,
-  hostname: "127.0.0.1",
+  hostname: config.PLATFORM_GATEWAY_HOST,
   async fetch(req, server) {
     const url = new URL(req.url);
     const host = req.headers.get("host") ?? "";
@@ -307,4 +307,4 @@ gatewayServer = Bun.serve<SocketData>({
 });
 
 void listenForRevocations();
-console.log(`OpenCodex Remote gateway listening on 127.0.0.1:${config.PLATFORM_GATEWAY_PORT}`);
+console.log(`OpenCodex Remote gateway listening on ${config.PLATFORM_GATEWAY_HOST}:${config.PLATFORM_GATEWAY_PORT}`);

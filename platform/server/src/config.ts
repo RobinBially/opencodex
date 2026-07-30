@@ -4,7 +4,7 @@ import { z } from "zod";
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  PLATFORM_DATABASE_URL: z.string().min(1),
+  PLATFORM_DATABASE_URL: z.string().min(1).optional(),
   PLATFORM_BASE_URL: z.string().url(),
   PLATFORM_INSTANCE_DOMAIN: z.string().min(3),
   PLATFORM_PRIVATE_HOSTNAME_DOMAIN: z.string().min(3).default("private.remote.opencodexpages.me"),
@@ -13,6 +13,7 @@ const envSchema = z.object({
   PLATFORM_GATEWAY_KID: z.string().default("gateway-1"),
   PLATFORM_CONTROL_PORT: z.coerce.number().int().min(1).max(65535).default(10200),
   PLATFORM_GATEWAY_PORT: z.coerce.number().int().min(1).max(65535).default(10201),
+  PLATFORM_GATEWAY_HOST: z.string().default("127.0.0.1"),
   PLATFORM_DEV_AUTH_GITHUB_ID: z.string().regex(/^\d+$/).optional(),
   CLOUDFLARE_ACCOUNT_ID: z.string().optional(),
   CLOUDFLARE_ZONE_ID: z.string().optional(),
@@ -36,6 +37,7 @@ function credential(name: string, envValue?: string): string | undefined {
 }
 
 export interface PlatformConfig extends z.infer<typeof envSchema> {
+  PLATFORM_DATABASE_URL: string;
   cloudflareApiToken?: string;
   cloudflareAuthEmail?: string;
   gatewayPrivateKeyPem: string;
@@ -51,10 +53,12 @@ export function loadPlatformConfig(env: NodeJS.ProcessEnv = process.env): Platfo
     GITHUB_CLIENT_SECRET: credential("github-client-secret", env.GITHUB_CLIENT_SECRET),
   });
   const gatewayPrivateKeyPem = credential("gateway-ed25519-private-key", env.PLATFORM_GATEWAY_PRIVATE_KEY);
+  const databaseUrl = credential("database-url", env.PLATFORM_DATABASE_URL);
   const encryptionKeyValue = credential("platform-encryption-key", env.PLATFORM_ENCRYPTION_KEY);
   const auditHmacValue = credential("audit-hmac-key", env.PLATFORM_AUDIT_HMAC_KEY);
   const syntheticHealthToken = credential("synthetic-health-token", env.PLATFORM_SYNTHETIC_HEALTH_TOKEN);
   if (!gatewayPrivateKeyPem) throw new Error("gateway Ed25519 private key credential is required");
+  if (!databaseUrl) throw new Error("platform database URL credential is required");
   if (!encryptionKeyValue || Buffer.from(encryptionKeyValue, "base64url").length !== 32) {
     throw new Error("platform encryption key must be 32 base64url-encoded bytes");
   }
@@ -64,6 +68,7 @@ export function loadPlatformConfig(env: NodeJS.ProcessEnv = process.env): Platfo
   if (!syntheticHealthToken || syntheticHealthToken.length < 32) throw new Error("synthetic health token is required");
   return {
     ...parsed,
+    PLATFORM_DATABASE_URL: databaseUrl,
     cloudflareApiToken: credential("cloudflare-api-token", env.CLOUDFLARE_API_TOKEN),
     cloudflareAuthEmail: credential("cloudflare-auth-email", env.CLOUDFLARE_AUTH_EMAIL),
     gatewayPrivateKeyPem,
