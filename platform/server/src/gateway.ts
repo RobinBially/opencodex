@@ -44,6 +44,25 @@ function remoteCredential(req: Request): string | null {
   return token?.startsWith("ocxr_") ? authorization : null;
 }
 
+function browserAccessRedirect(req: Request): Response | null {
+  if (req.method !== "GET" || req.headers.get("upgrade")?.toLowerCase() === "websocket") return null;
+  const acceptsHtml = req.headers.get("sec-fetch-dest") === "document"
+    || (req.headers.get("accept") ?? "").includes("text/html");
+  if (!acceptsHtml) return null;
+  const host = (req.headers.get("host") ?? "").toLowerCase().replace(/:\d+$/, "");
+  const suffix = `.${config.PLATFORM_INSTANCE_DOMAIN.toLowerCase()}`;
+  if (!host.endsWith(suffix)) return null;
+  const slug = host.slice(0, -suffix.length);
+  if (!/^[a-z0-9-]{1,63}$/.test(slug)) return null;
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: `${config.PLATFORM_BASE_URL.replace(/\/$/, "")}/access/${encodeURIComponent(slug)}`,
+      "cache-control": "no-store",
+    },
+  });
+}
+
 function sanitizeRequestHeaders(req: Request, target: URL, assertion: string): Headers {
   const headers = new Headers();
   for (const [name, value] of req.headers) {
@@ -225,7 +244,10 @@ gatewayServer = Bun.serve<SocketData>({
     }
 
     const auth = await authenticate(req);
-    if (!auth) return new Response("Not found", { status: 404, headers: { "cache-control": "no-store" } });
+    if (!auth) {
+      return browserAccessRedirect(req)
+        ?? new Response("Not found", { status: 404, headers: { "cache-control": "no-store" } });
+    }
     const target = privateUrl(auth.instance, url);
     const assertion = signGatewayAssertion(config, {
       instanceId: auth.instance.id,

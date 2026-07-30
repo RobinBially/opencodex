@@ -18,9 +18,11 @@ Public instance hostnames use `<slug>.opencodexpages.me`. Cloudflare Universal S
 
 ## Bootstrap authentication
 
-The account does not yet have a dedicated GitHub OAuth application. The apex dashboard is therefore protected by a Cloudflare Access application allowing one exact maintainer email through One-Time PIN. Behind that edge boundary, the Control Plane runs its existing non-production numeric-ID bootstrap path for the same maintainer.
+The central service now has a dedicated GitHub OAuth application and the production callback is generated as `https://opencodexpages.me/api/auth/callback/github`. OAuth is identity-only: database hooks clear GitHub access, refresh, and ID tokens before the account row is stored.
 
-This is deliberately single-user. Do not add another Access email while numeric-ID bootstrap mode is active because every allowed request would inherit the bootstrap administrator. Before a private beta, create the GitHub OAuth app, remove `PLATFORM_DEV_AUTH_GITHUB_ID`, set `NODE_ENV=production`, and remove or relax the apex Access application as intended.
+The apex remains protected by a Cloudflare Access application allowing one exact maintainer email through One-Time PIN. Behind that edge boundary, the Control Plane still runs its non-production numeric-ID bootstrap path for the same maintainer while the signed Linux helper and abuse controls are unfinished.
+
+This is deliberately single-user. Do not add another Access email while numeric-ID bootstrap mode is active because every allowed request would inherit the bootstrap administrator. Before a multi-user beta, remove `PLATFORM_DEV_AUTH_GITHUB_ID`, set `NODE_ENV=production`, explicitly choose `PLATFORM_SIGNUP_MODE=private|open`, and remove or relax the apex Access application as intended.
 
 The wildcard instance Gateway is not placed behind the apex Access application. It continues to require an instance session or `ocxr_` token and conceals invalid access as `404`.
 
@@ -58,6 +60,8 @@ curl -fsS http://127.0.0.1:10200/healthz
 docker exec ocxr-mesh warp-cli --accept-tos status
 ```
 
+The Gateway container drops every Linux capability. Its read-only `/opt/opencodex-remote/platform` bind mount must therefore remain world-traversable/readable (`0755` directories and `0644` source/assets). A deployment that copies a private `0700/0600` checkout with `rsync -a` makes Bun fail with `CouldntReadCurrentDirectory`. Normalize deployment permissions before restarting the Gateway; no secret is stored in this tree.
+
 Restart Mesh and Gateway as a pair because the Gateway joins the Mesh container network namespace:
 
 ```bash
@@ -72,6 +76,8 @@ Only `127.0.0.1:10200`, `127.0.0.1:10201`, and `127.0.0.1:15444` are published o
 The live worker created a disposable instance Tunnel, DNS-only RFC1918 record, `/32` CIDR activation route, and private hostname route. The delete saga marked the instance deleted and removed all four Cloudflare resources. A temporary Access service token used to validate public health/UI/assets was deleted after the test. No validation token or disposable `ocxr-` Tunnel remains.
 
 An awaiting-Agent private hostname does not synthesize through Gateway until its dedicated Tunnel connector is online. This is expected; the Agent obtains its Tunnel token through the public Control Plane and connects before private Gateway traffic is sent.
+
+The 2026-07-30 local-first onboarding deployment added migration `0002_remote_devices.sql`, the central `/connect/<request>`, `/access/<slug>`, and landing routes, device-token activation APIs, Argon2id Remote password verification with a five-attempt lock, and top-level unauthenticated browser redirects from instance hostnames. A version-matched PostgreSQL 17 custom-format dump and the prior `/opt` runtime are stored under `/home/ubuntu/backups/opencodex-remote-onboarding-20260730T063728Z`.
 
 ## Secret boundary
 

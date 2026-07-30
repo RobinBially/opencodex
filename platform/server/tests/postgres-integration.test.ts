@@ -86,10 +86,12 @@ postgresTest("PostgreSQL 17 auth, lifecycle, isolation, and streaming stay compa
 
   try {
     await adminPool.query(`CREATE DATABASE ${quotedDatabaseName}`);
-    const migration = readFileSync(join(import.meta.dir, "..", "migrations", "0001_remote_platform.sql"), "utf8");
     const migrationPool = new Pool({ connectionString: databaseUrl.toString(), max: 1 });
     try {
-      await migrationPool.query(migration);
+      for (const migrationName of ["0001_remote_platform.sql", "0002_remote_devices.sql"]) {
+        const migration = readFileSync(join(import.meta.dir, "..", "migrations", migrationName), "utf8");
+        await migrationPool.query(migration);
+      }
     } finally {
       await migrationPool.end();
     }
@@ -184,6 +186,11 @@ postgresTest("PostgreSQL 17 auth, lifecycle, isolation, and streaming stay compa
     });
     expect((await adapter.findVerificationValue("postgres-integration"))?.value).toBe("opaque-verification-value");
     expect((await adapter.findAccountByProviderId("111111", "github"))?.userId).toBe(first.user.id);
+    const githubSecrets = await database.query<{ access_token: string | null; refresh_token: string | null; id_token: string | null }>(
+      "SELECT access_token,refresh_token,id_token FROM accounts WHERE provider_id='github' AND user_id=$1",
+      [first.user.id],
+    );
+    expect(githubSecrets.rows[0]).toEqual({ access_token: null, refresh_token: null, id_token: null });
 
     await database.query("UPDATE users SET status='active' WHERE id IN ($1,$2)", [first.user.id, second.user.id]);
     const store = new PlatformStore(database, config);
@@ -194,6 +201,35 @@ postgresTest("PostgreSQL 17 auth, lifecycle, isolation, and streaming stay compa
       githubNumericId: "222222",
     });
     if (!secondActor) throw new Error("second actor was not authorized");
+    const firstActor = await store.authorizeUser({
+      id: first.user.id,
+      name: first.user.name,
+      email: first.user.email,
+      githubNumericId: "111111",
+    });
+    if (!firstActor) throw new Error("first actor was not authorized");
+
+    const deviceKey = generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "der" });
+    const deviceLink = await store.createDeviceAuthorization({
+      deviceName: "Integration workstation",
+      platform: "linux-x64",
+      publicKeyDer: deviceKey,
+      networkSignal: "127.0.0.1",
+    });
+    expect(deviceLink.pollSecret.startsWith("ocxr_device_")).toBe(true);
+    expect((await store.pollDeviceAuthorization(deviceLink.id, deviceLink.pollSecret))?.status).toBe("pending");
+    expect((await store.approveDeviceAuthorization(firstActor, deviceLink.id)).status).toBe("approved");
+    const approvedDevice = await store.pollDeviceAuthorization(deviceLink.id, deviceLink.pollSecret);
+    expect(approvedDevice?.status).toBe("approved");
+    expect(approvedDevice?.deviceToken?.startsWith("ocxr_device_")).toBe(true);
+    const deviceActor = await store.authorizeDeviceToken(approvedDevice?.deviceToken ?? "");
+    expect(deviceActor?.actor.id).toBe(firstActor.id);
+    expect(await store.remoteProfile(firstActor)).toMatchObject({ passwordSet: false, canActivate: true, instance: null });
+    await store.setRemotePassword(firstActor, "integration-password");
+    await store.setRemotePassword(secondActor, "second-integration-password");
+    expect(await store.remoteProfile(firstActor)).toMatchObject({ passwordSet: true, canActivate: true, instance: null });
+    expect(await store.acknowledgeDeviceAuthorization(deviceLink.id, deviceLink.pollSecret)).toBe(true);
+    expect((await store.pollDeviceAuthorization(deviceLink.id, deviceLink.pollSecret))?.status).toBe("consumed");
 
     let firstInstanceId: string | null = null;
     let upstreamStreamCancelled = false;
@@ -315,14 +351,21 @@ postgresTest("PostgreSQL 17 auth, lifecycle, isolation, and streaming stay compa
     expect(missingApi.status).toBe(404);
     expect(missingApi.headers.get("content-type")).toContain("application/json");
 
-    const createResponse = await fetch(`http://127.0.0.1:${controlPort}/api/v1/instances`, {
+    const createResponse = await fetch(`http://127.0.0.1:${controlPort}/api/v1/remote/activate`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        authorization: `Bearer ${approvedDevice?.deviceToken}`,
+        "content-type": "application/json",
+      },
       body: JSON.stringify({ name: "First Instance", slug: "first" }),
     });
-    expect(createResponse.status).toBe(202);
-    const createdFirst = await createResponse.json() as { instance: { id: string } };
-    firstInstanceId = createdFirst.instance.id;
+    const createBody = await createResponse.json() as { error?: string; profile?: { instance: { id: string; publicUrl: string } } };
+    if (createResponse.status !== 202 || !createBody.profile) {
+      throw new Error(`remote activation failed (${createResponse.status}): ${createBody.error ?? "missing profile"}`);
+    }
+    const createdFirst = createBody as { profile: { instance: { id: string; publicUrl: string } } };
+    firstInstanceId = createdFirst.profile.instance.id;
+    expect(createdFirst.profile.instance.publicUrl).toBe("https://first.instances.example.test");
     const createdSecond = await store.createInstance(secondActor, { name: "Second Instance", slug: "second" });
 
     await waitFor(async () => {
@@ -340,6 +383,12 @@ postgresTest("PostgreSQL 17 auth, lifecycle, isolation, and streaming stay compa
         ? true
         : null;
     });
+    const pairingResponse = await fetch(`http://127.0.0.1:${controlPort}/api/v1/remote/pairing-code`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${approvedDevice?.deviceToken}` },
+    });
+    expect(pairingResponse.status).toBe(201);
+    expect((await pairingResponse.json() as { code: string }).code).toHaveLength(12);
     await stopProcess(worker);
 
     const invisible = await fetch(`http://127.0.0.1:${controlPort}/api/v1/instances/${createdSecond.id}`);
@@ -395,9 +444,30 @@ postgresTest("PostgreSQL 17 auth, lifecycle, isolation, and streaming stay compa
     expect((await gatewayRequest("first.instances.example.test")).status).toBe(404);
     expect((await gatewayRequest("second.instances.example.test", secondToken)).status).toBe(404);
 
+    const browserRedirect = await fetch(`http://127.0.0.1:${gatewayPort}/`, {
+      headers: { host: "first.instances.example.test", accept: "text/html", "sec-fetch-dest": "document" },
+      redirect: "manual",
+    });
+    expect(browserRedirect.status).toBe(302);
+    expect(browserRedirect.headers.get("location")).toBe(`${environment.PLATFORM_BASE_URL}/access/first`);
+
+    const wrongPassword = await fetch(
+      `http://127.0.0.1:${controlPort}/api/v1/remote/access/first`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ password: "incorrect-password" }),
+      },
+    );
+    expect(wrongPassword.status).toBe(401);
+
     const firstAuthorization = await fetch(
-      `http://127.0.0.1:${controlPort}/api/v1/instances/${firstInstanceId}/authorize`,
-      { method: "POST" },
+      `http://127.0.0.1:${controlPort}/api/v1/remote/access/first`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ password: "integration-password" }),
+      },
     );
     expect(firstAuthorization.status).toBe(201);
     const firstAuthorizationUrl = new URL((await firstAuthorization.json() as { url: string }).url);
@@ -408,7 +478,11 @@ postgresTest("PostgreSQL 17 auth, lifecycle, isolation, and streaming stay compa
     expect(firstExchange.status).toBe(302);
     const firstSessionCookie = firstExchange.headers.get("set-cookie")?.split(";", 1)[0];
     expect(firstSessionCookie).toStartWith("__Host-ocxr_instance=");
-    const secondAuthorizationUrl = new URL(await store.issueInstanceAuthorization(secondActor, createdSecond.id));
+    const secondAuthorizationUrl = new URL(await store.issueInstanceAuthorization(
+      secondActor,
+      createdSecond.id,
+      "second-integration-password",
+    ));
     const secondExchange = await fetch(
       `http://127.0.0.1:${gatewayPort}${secondAuthorizationUrl.pathname}${secondAuthorizationUrl.search}`,
       { headers: { host: "second.instances.example.test" }, redirect: "manual" },
@@ -504,6 +578,9 @@ postgresTest("PostgreSQL 17 auth, lifecycle, isolation, and streaming stay compa
     const observedSocketClose = revokedSocketClose as unknown as { code: number; reason: string };
     expect(observedSocketClose).toEqual({ code: 1008, reason: "instance disabled" });
     expect((await gatewayRequest("first.instances.example.test", firstToken)).status).toBe(404);
+
+    expect(await store.revokeDeviceToken(approvedDevice?.deviceToken ?? "")).toBe(true);
+    expect(await store.authorizeDeviceToken(approvedDevice?.deviceToken ?? "")).toBeNull();
 
     await adapter.deleteVerificationByIdentifier("postgres-integration");
   } finally {

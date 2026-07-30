@@ -13,6 +13,7 @@ import ApiKeys from "./pages/ApiKeys";
 import Claude from "./pages/Claude";
 import Grok from "./pages/Grok";
 import Startup from "./pages/Startup";
+import Remote from "./pages/Remote";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX } from "./icons";
 import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n/shared";
@@ -30,6 +31,7 @@ type Theme = "light" | "dark" | "system";
 const PAGE_TKEY: Record<Page, TKey> = {
   dashboard: "nav.dashboard",
   startup: "nav.startup",
+  remote: "nav.remote",
   providers: "nav.providers",
   models: "nav.models",
   combos: "nav.combos",
@@ -49,6 +51,7 @@ const THEME_KEY = "ocx-theme";
 const NAV: { id: Page; tkey: TKey; Icon: typeof IconGrid }[] = [
   { id: "dashboard", tkey: "nav.dashboard", Icon: IconGrid },
   { id: "codex-auth", tkey: "nav.codexAuth", Icon: IconKey },
+  { id: "remote", tkey: "nav.remote", Icon: IconGlobe },
   { id: "providers", tkey: "nav.providers", Icon: IconServer },
   { id: "models", tkey: "nav.models", Icon: IconBoxes },
   { id: "subagents", tkey: "nav.subagents", Icon: IconBot },
@@ -297,6 +300,7 @@ export default function App() {
             reloadLabel={t("errorBoundary.reload")}
           >
             {page === "dashboard" && <Dashboard apiBase={API_BASE} />}
+            {page === "remote" && <Remote apiBase={API_BASE} />}
             {page === "startup" && <Startup apiBase={API_BASE} />}
             {page === "providers" && <Providers apiBase={API_BASE} />}
             {page === "models" && <Models apiBase={API_BASE} />}

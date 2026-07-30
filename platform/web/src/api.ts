@@ -41,6 +41,15 @@ export interface CurrentUser {
   status: "active" | "pending_invite" | "suspended";
 }
 
+export interface DeviceAuthorizationRequest {
+  id: string;
+  userCode: string;
+  deviceName: string;
+  platform: string;
+  expiresAt: string;
+  status: "pending" | "approved" | "expired" | "consumed";
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -71,6 +80,17 @@ export async function getCurrentUser(): Promise<CurrentUser> {
   return (await request<{ user: CurrentUser }>("/api/v1/me")).user;
 }
 
+export async function getDeviceAuthorizationRequest(id: string): Promise<DeviceAuthorizationRequest> {
+  return (await request<{ request: DeviceAuthorizationRequest }>(`/api/v1/device-links/${id}`)).request;
+}
+
+export async function approveDeviceAuthorizationRequest(id: string): Promise<DeviceAuthorizationRequest> {
+  return (await request<{ request: DeviceAuthorizationRequest }>(`/api/v1/device-links/${id}/approve`, {
+    method: "POST",
+    body: "{}",
+  })).request;
+}
+
 export async function redeemInvite(token: string): Promise<void> {
   if (demo) return;
   await request("/api/v1/invites/redeem", { method: "POST", body: JSON.stringify({ token }) });
@@ -92,9 +112,19 @@ export async function createPairingCode(instanceId: string): Promise<{ code: str
   return request(`/api/v1/instances/${instanceId}/pairing-code`, { method: "POST", body: "{}" });
 }
 
-export async function openInstance(instanceId: string): Promise<string> {
+export async function openInstance(instanceId: string, password: string): Promise<string> {
   if (demo) return "#demo-instance";
-  return (await request<{ url: string }>(`/api/v1/instances/${instanceId}/authorize`, { method: "POST", body: "{}" })).url;
+  return (await request<{ url: string }>(`/api/v1/instances/${instanceId}/authorize`, {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  })).url;
+}
+
+export async function accessInstance(slug: string, password: string): Promise<string> {
+  return (await request<{ url: string }>(`/api/v1/remote/access/${encodeURIComponent(slug)}`, {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  })).url;
 }
 
 export async function issueToken(instanceId: string): Promise<{ token: string; expiresAt: string }> {

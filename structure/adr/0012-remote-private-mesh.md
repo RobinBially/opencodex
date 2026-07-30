@@ -1,6 +1,6 @@
 # ADR 0012: Remote access through a central Gateway and private Mesh routes
 
-- Status: accepted for implementation; production remains blocked on operating E2E and deployment work
+- Status: accepted and central runtime deployed; public multi-user release remains blocked on signed Agent delivery and final operating E2E
 - Date: 2026-07-30
 
 ## Context
@@ -14,6 +14,8 @@ All instance wildcard DNS enters a central VPS Gateway. The Gateway resolves hos
 Each private hostname has a DNS-only A record under `private.remote.opencodexpages.me` whose value is a unique address from `10.192.0.0/10`. The Agent assigns that `/32` to loopback and listens only on that address at port `10101`. The same `/32` is attached to the instance Tunnel as a narrow CIDR activation route because a hostname route alone did not enable `warp-routing` in the live Cloudflare account. The exact DNS record is not a public application route: Internet clients only receive an unroutable RFC1918 address, while enrolled Mesh traffic receives a synthetic `100.80.0.0/16` address and reaches the dedicated Tunnel.
 
 Cloudflare Access Applications are not used. No public hostname is attached to a user Tunnel. Mesh failure does not authorize a weaker automatic fallback.
+
+The onboarding control surface is the local `ocx gui`, not the central instance dashboard. A ten-minute device authorization binds the PC key to a GitHub identity without returning GitHub credentials. Users set an additional Argon2id Remote password and reserve one hostname. Browser entry to that hostname redirects only top-level HTML navigation to the central access page; API and WebSocket failures remain concealed. The central page requires both the owning GitHub session and the Remote password before issuing a short-lived hostname exchange code.
 
 ## Consequences
 

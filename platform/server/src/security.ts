@@ -19,7 +19,7 @@ export function sha256(value: string): Buffer {
   return createHash("sha256").update(value).digest();
 }
 
-export function issueOpaqueToken(prefix: "ocxr_" | "ocxr_session_" | "ocxr_agent_"): string {
+export function issueOpaqueToken(prefix: "ocxr_" | "ocxr_session_" | "ocxr_agent_" | "ocxr_device_"): string {
   return `${prefix}${randomBytes(32).toString("base64url")}`;
 }
 

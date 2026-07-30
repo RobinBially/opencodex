@@ -3,12 +3,13 @@ import {
   IconActivityHeartbeat, IconArrowLeft, IconBox, IconCheck, IconChevronDown,
   IconCircleCheckFilled, IconClipboard, IconCopy, IconExternalLink,
   IconGlobe, IconKey, IconLink, IconLoader2, IconMenu2, IconPlayerPause,
-  IconPlus, IconServer2, IconShield, IconTerminal2, IconTrash, IconX,
+  IconLock, IconPlus, IconServer2, IconShield, IconTerminal2, IconTrash, IconX,
 } from "@tabler/icons-react";
 import {
   createInstance, createPairingCode, deleteInstance, getInstance, issueToken, listInstances,
-  getCurrentUser, openInstance, redeemInvite, suspendInstance, type CurrentUser,
-  type Instance, type InstanceStatus,
+  getCurrentUser, openInstance, redeemInvite, suspendInstance, getDeviceAuthorizationRequest,
+  approveDeviceAuthorizationRequest, type CurrentUser, type DeviceAuthorizationRequest,
+  type Instance, type InstanceStatus, accessInstance,
 } from "./api";
 import { authClient } from "./auth-client";
 
@@ -66,7 +67,9 @@ function Detail({ instance, onChanged }: { instance: Instance; onChanged: () => 
     setNotice(message); setTimeout(() => setNotice(null), 1800);
   }
   async function handleOpen() {
-    const url = await openInstance(instance.id);
+    const password = window.prompt("Remote access password");
+    if (!password) return;
+    const url = await openInstance(instance.id, password);
     if (url.startsWith("#")) setNotice("Demo instance is ready"); else window.location.assign(url);
   }
   async function rotate() {
@@ -189,7 +192,102 @@ function SecondaryPage({ view, instances }: { view: "activity" | "security"; ins
   </section></>;
 }
 
-export function App() {
+function DeviceConnection({ requestId }: { requestId: string }) {
+  const [request, setRequest] = useState<DeviceAuthorizationRequest | null>(null);
+  const [user, setUser] = useState<CurrentUser | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [approving, setApproving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const next = await getDeviceAuthorizationRequest(requestId);
+      setRequest(next);
+      try { setUser(await getCurrentUser()); } catch { setUser(null); }
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Device request unavailable");
+    } finally { setLoading(false); }
+  }
+  useEffect(() => { void load(); }, [requestId]);
+  async function signIn() {
+    await authClient.signIn.social({ provider: "github", callbackURL: window.location.pathname });
+  }
+  async function approve() {
+    setApproving(true);
+    try { setRequest(await approveDeviceAuthorizationRequest(requestId)); setError(null); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not approve device"); }
+    finally { setApproving(false); }
+  }
+  if (loading) return <div className="connect-shell"><div className="connect-card"><IconLoader2 className="spin" />Loading device request</div></div>;
+  if (error || !request) return <div className="connect-shell"><div className="connect-card"><IconShield /><h1>Device link unavailable</h1><p>{error ?? "This request does not exist or has expired."}</p></div></div>;
+  const complete = request.status === "approved" || request.status === "consumed";
+  const unavailable = request.status === "expired";
+  return <div className="connect-shell"><section className="connect-card">
+    <div className="connect-brand"><img src="/logo.png" alt="" /><div><strong>opencodex</strong><span>Remote device approval</span></div></div>
+    {complete ? <div className="connect-result"><IconCircleCheckFilled /><h1>Computer approved</h1><p>Return to the local <code>ocx gui</code> window. It will finish linking automatically.</p></div>
+      : unavailable ? <div className="connect-result"><IconShield /><h1>Request expired</h1><p>Start GitHub sign-in again from <code>ocx gui → Remote</code>.</p></div>
+      : <><header><span>Connect this computer</span><h1>{request.deviceName}</h1><p>Confirm that this code matches the one shown in the local OpenCodex GUI.</p></header>
+        <div className="connect-code"><span>Device code</span><strong>{request.userCode.match(/.{1,4}/g)?.join(" ")}</strong></div>
+        <dl className="connect-facts"><div><dt>Platform</dt><dd>{request.platform}</dd></div><div><dt>Expires</dt><dd>{new Date(request.expiresAt).toLocaleTimeString()}</dd></div></dl>
+        {!user ? <button className="primary connect-action" onClick={signIn}>Continue with GitHub</button>
+          : <><div className="connect-account"><span className="avatar">GH</span><div><strong>{user.name}</strong><span>{user.email}</span></div></div><button className="primary connect-action" onClick={approve} disabled={approving}>{approving ? "Approving…" : "Approve this computer"}</button></>}
+        {error && <div className="form-error">{error}</div>}
+        <p className="connect-security"><IconShield />GitHub credentials stay on the service. The local OCX receives only a revocable OpenCodex device credential.</p>
+      </>}
+  </section></div>;
+}
+
+function CentralLanding() {
+  return <div className="connect-shell"><section className="connect-card landing-card">
+    <div className="connect-brand"><img src="/logo.png" alt="" /><div><strong>opencodex</strong><span>Remote</span></div></div>
+    <IconGlobe className="landing-icon" /><h1>Remote starts in your local OCX</h1>
+    <p>Open <code>ocx gui</code>, choose <strong>Remote</strong>, and continue with GitHub. This site handles identity and device approval; your computer runs the connector.</p>
+    <div className="landing-steps"><span>1</span><p>Run <code>ocx gui</code></p><span>2</span><p>Open <strong>Remote</strong></p><span>3</span><p>Approve this computer here</p></div>
+  </section></div>;
+}
+
+function InstanceAccess({ slug }: { slug: string }) {
+  const [user, setUser] = useState<CurrentUser | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void getCurrentUser().then(setUser).catch(() => setUser(null)).finally(() => setLoading(false));
+  }, []);
+  async function signIn() {
+    await authClient.signIn.social({ provider: "github", callbackURL: window.location.pathname });
+  }
+  async function unlock() {
+    setBusy(true);
+    setError(null);
+    try {
+      window.location.assign(await accessInstance(slug, password));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not open Remote");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <div className="connect-shell"><section className="connect-card access-instance-card">
+    <div className="connect-brand"><img src="/logo.png" alt="" /><div><strong>opencodex</strong><span>Remote access</span></div></div>
+    <IconLock className="landing-icon" /><h1>{slug}.{instanceDomain}</h1>
+    <p>Sign in with the GitHub account that owns this computer, then enter its separate Remote password.</p>
+    {loading ? <div className="access-inline"><IconLoader2 className="spin" />Checking GitHub session</div>
+      : !user ? <button className="primary connect-action" onClick={signIn}>Continue with GitHub</button>
+        : user.status !== "active" ? <div className="form-error">This GitHub account cannot access this Remote instance.</div>
+          : <><div className="connect-account"><span className="avatar">GH</span><div><strong>{user.name}</strong><span>{user.email}</span></div></div>
+            <label className="access-password"><span>Remote password</span><input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && password.length >= 10) void unlock(); }} /></label>
+            <button className="primary connect-action" disabled={busy || password.length < 10} onClick={unlock}>{busy ? "Opening…" : "Open Remote GUI"}</button></>}
+    {error && <div className="form-error">{error}</div>}
+    <p className="connect-security"><IconShield />GitHub confirms account ownership. The Remote password is checked as an Argon2id hash and is never sent to the user computer.</p>
+  </section></div>;
+}
+
+function AdminDashboard() {
   const [view, setView] = useState<View>("instances");
   const [instances, setInstances] = useState<Instance[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -209,7 +307,7 @@ export function App() {
   }
   useEffect(() => { void refresh(); }, []);
   const selected = useMemo(() => instances.find(item => item.id === selectedId) ?? null, [instances, selectedId]);
-  async function signIn() { await authClient.signIn.social({ provider: "github", callbackURL: "/" }); }
+  async function signIn() { await authClient.signIn.social({ provider: "github", callbackURL: "/admin" }); }
   async function acceptInvite() {
     try { await redeemInvite(invite); await refresh(); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Invite rejected"); }
@@ -217,4 +315,13 @@ export function App() {
   return <div className="app-shell"><Sidebar view={view} setView={setView} open={menu} close={() => setMenu(false)} /><main><button className="mobile-menu" onClick={() => setMenu(true)} aria-label="Open navigation"><IconMenu2 /></button>
     {loading ? <div className="loading"><IconLoader2 />Loading instances</div> : error === "not found" ? <div className="access-card"><IconShield /><h1>Private access</h1><p>Sign in with the GitHub account that received an invitation.</p><button className="primary" onClick={signIn}>Continue with GitHub</button></div> : user?.status === "pending_invite" ? <div className="access-card"><IconKey /><h1>Redeem your invite</h1><p>Paste the one-time invitation token. It expires 24 hours after it was created.</p><input value={invite} onChange={event => setInvite(event.target.value)} placeholder="Invitation token" /><button className="primary" onClick={acceptInvite}>Redeem invite</button>{error && <span className="form-error">{error}</span>}</div> : error ? <div className="load-error"><IconShield />{error}<button onClick={refresh}>Retry</button></div> : view === "instances" ? <Instances instances={instances} selected={selected} select={setSelectedId} refresh={refresh} newInstance={() => setView("new")} /> : view === "new" ? <NewInstance onCancel={() => setView("instances")} onCreated={refresh} /> : <SecondaryPage view={view} instances={instances} />}
   </main></div>;
+}
+
+export function App() {
+  const deviceMatch = window.location.pathname.match(/^\/connect\/([0-9a-f-]{36})$/i);
+  if (deviceMatch) return <DeviceConnection requestId={deviceMatch[1]} />;
+  const accessMatch = window.location.pathname.match(/^\/access\/([a-z0-9-]{1,63})$/i);
+  if (accessMatch) return <InstanceAccess slug={accessMatch[1].toLowerCase()} />;
+  if (window.location.pathname !== "/admin") return <CentralLanding />;
+  return <AdminDashboard />;
 }

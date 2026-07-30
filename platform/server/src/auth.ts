@@ -19,6 +19,34 @@ export function createPlatformAuth(config: PlatformConfig, database: Database) {
         mapProfileToUser: profile => ({ githubNumericId: String(profile.id) }),
       },
     },
+    databaseHooks: {
+      account: {
+        create: {
+          before: async account => account.providerId === "github" ? {
+            data: {
+              ...account,
+              accessToken: null,
+              refreshToken: null,
+              idToken: null,
+              accessTokenExpiresAt: null,
+              refreshTokenExpiresAt: null,
+            },
+          } : undefined,
+        },
+        update: {
+          before: async account => account.providerId === "github" ? {
+            data: {
+              ...account,
+              accessToken: null,
+              refreshToken: null,
+              idToken: null,
+              accessTokenExpiresAt: null,
+              refreshTokenExpiresAt: null,
+            },
+          } : undefined,
+        },
+      },
+    },
     account: {
       modelName: "accounts",
       fields: {

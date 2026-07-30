@@ -33,6 +33,8 @@
   - bounded `jti` replay cache
 - 기존 admin token과 로컬 GUI session 인증 흐름 유지.
 - 정상·재사용·잘못된 method/path/instance·만료·수명 초과 집중 테스트 추가.
+- `ocx gui`에 **Remote** 로컬 시작점을 추가하고 GitHub device approval, 별도 비밀번호, hostname 예약, 중앙 provisioning 상태를 보호된 `remote.json`과 management API로 연결.
+- polling secret과 `ocxr_device_` token은 browser DTO에 포함하지 않고 기존 config directory permission hardening과 atomic write를 재사용.
 
 ### 중앙 플랫폼 코드 기반
 
@@ -45,6 +47,9 @@
   - provisioning jobs, Cloudflare resources, health observations
   - audit logs, abuse reports
 - Better Auth + GitHub provider 설정과 GitHub numeric ID 필드 추가.
+- GitHub OAuth account create/update hook에서 access/refresh/ID token을 DB 저장 전에 제거해 identity-only 경계로 축소.
+- Remote device authorization, 장치별 token 폐기, Argon2id Remote password, 5회 실패/15분 잠금, password 변경 시 instance session 폐기 추가.
+- 장치 token으로 hostname/instance를 만들고 provisioning 상태와 10분 Agent pairing code를 로컬 GUI에 반환하는 API 추가.
 - 최초 관리자 numeric ID 부트스트랩과 24시간 일회용 초대 소비 로직 추가.
 - 사용자당 live instance 1개, 전체 active 사용자 50명 제한 추가.
 - 인스턴스 slug 트랜잭션 예약과 provisioning job 생성 추가.
@@ -98,6 +103,9 @@
 - New instance, pairing code, open, token 발급, suspend, delete API 연결.
 - 개발 demo data mode: `VITE_REMOTE_DEMO=true`.
 - production SPA fallback과 미등록 `/api/*`, `/agent/*` JSON 404 경계 검증.
+- apex `/`는 local `ocx gui → Remote` 안내로 교체하고 운영 console은 `/admin`으로 분리.
+- `/connect/<request>` GitHub 장치 승인과 `/access/<slug>` GitHub 소유권 + Remote password 접속 화면 추가.
+- instance Gateway는 무자격 top-level HTML navigation만 central access 화면으로 redirect하고 API/WebSocket은 계속 은닉 `404` 처리.
 
 ### PostgreSQL 17 로컬 통합 검증
 
@@ -134,6 +142,8 @@
 - 실제 worker가 테스트 인스턴스의 Tunnel·DNS·CIDR·hostname route 네 리소스를 생성하고 delete saga가 모두 회수하는지 확인.
 - public apex health/UI/asset, wildcard TLS와 무자격 `404`, Mesh 연결 상태를 운영 경로에서 확인.
 - 실제 리소스 ID와 재시작/점검 절차는 [PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md)에 기록.
+- `0002_remote_devices.sql`과 local-first landing/approval/access runtime을 운영에 적용. 적용 전 PostgreSQL 17 dump와 `/opt` runtime archive를 생성.
+- capability 없는 Gateway가 read-only bind mount를 읽을 수 있도록 운영 source tree `0755/0644` permission 불변조건을 확인.
 
 ## 구현 중인 부분
 
@@ -184,7 +194,7 @@
 - private hostname은 `127.0.0.1` hosts가 아니라 DNS-only RFC1918 A record를 사용한다. Agent `prepare-network`는 구현했지만 installer/systemd의 privileged `ExecStartPre`와 비특권 runtime unit은 아직 미구현이다.
 - Cloudflare Tunnel, DNS, CIDR route, hostname route create/delete와 token GET 응답 shape를 live account로 검증했다.
 - Gateway synthetic token과 signing key를 포함한 credential은 root-only systemd/container credential mount로 배포했다.
-- Better Auth의 OAuth account에는 GitHub access token이 저장될 수 있다. 운영 전 DB encryption/토큰 최소 보존 정책을 확정해야 한다.
+- Better Auth의 GitHub OAuth account token은 DB hook에서 저장 전에 제거한다. callback 성공과 재로그인 후에도 `accounts.access_token`, `refresh_token`, `id_token`이 NULL인지 운영 전환 시 다시 확인한다.
 - Gateway와 Rust Agent는 100 MiB 양방향 streaming, SSE/WS, 30분 stream을 통과했다. 실제 OpenCodex process와 public ingress를 포함한 부하·backpressure는 아직 측정하지 않았다.
 - private transport DNS는 Phase 0에서 검증했고 public wildcard ingress와 TLS도 운영 배포에서 확인했다. dedicated GitHub OAuth app이 없어 `opencodex.me`와 `opencodexpages.me`의 production OAuth/cookie 분리는 아직 검증하지 않았다.
 
@@ -195,8 +205,10 @@ PASS  bun run typecheck                         (root)
 PASS  bun test tests/server-management-auth.test.ts
       16 tests / 56 expects
 PASS  bun test --isolate tests
-      6030 pass / 2 skip / 0 fail / 30540 expects
+      6033 pass / 2 skip / 0 fail / 30570 expects
 PASS  bun run privacy:scan
+PASS  cd gui && bun run lint && bun test tests && bun run build && bun run doctor
+      385 pass / 0 fail / 1663 expects; React Doctor 0 issues
 PASS  cd platform && bun run typecheck
 PASS  cd platform && bun test server/tests/cloudflare.test.ts
       5 tests / 22 expects
@@ -206,12 +218,14 @@ PASS  cd platform && CLOUDFLARE_LIVE_TESTS=true ... \
 PASS  cd platform && VITE_REMOTE_DEMO=true bun run build:web
 PASS  cd platform && PLATFORM_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55432/postgres \
       bun test server/tests/postgres-integration.test.ts
-      1 test / 56 expects, PostgreSQL 17.10
+      1 test / 74 expects, PostgreSQL 17.10
 PASS  cd remote-agent && cargo fmt --check
 PASS  cd remote-agent && cargo check
 PASS  cd remote-agent && cargo clippy --all-targets --all-features -- -D warnings
 PASS  cd remote-agent && cargo test
       3 Rust unit tests
+PASS  cd docs-site && bun run build
+      146 pages with localized Remote GUI and CLI documentation
 ```
 
 운영 bootstrap에서 추가로 통과한 항목:

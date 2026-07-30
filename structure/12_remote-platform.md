@@ -1,6 +1,6 @@
 # OpenCodex Remote platform boundary
 
-OpenCodex Remote는 기존 npm 패키지에 포함되지 않는 별도 중앙 플랫폼과 Linux Agent다.
+OpenCodex Remote는 npm OpenCodex의 로컬 GUI/device client, 별도 중앙 플랫폼, 그리고 별도 설치하는 Linux Agent로 구성된다.
 
 ## Repository boundary
 
@@ -8,9 +8,24 @@ OpenCodex Remote는 기존 npm 패키지에 포함되지 않는 별도 중앙 �
 - `platform/web/` — React/Vite private dashboard.
 - `platform/server/migrations/` — Better Auth와 platform schema.
 - `remote-agent/` — Rust local ingress, pairing, heartbeat, cloudflared supervisor.
+- `src/remote/` + `src/server/management/remote-routes.ts` — 보호된 local device state와 `ocx gui` Remote API.
 - `src/server/remote-assertion.ts` — 기존 OpenCodex `/api/*`의 defense-in-depth verifier.
 
-루트 `package.json#files`에는 `platform/`과 `remote-agent/`를 추가하지 않는다. npm으로 설치되는 일반 OpenCodex 사용자는 중앙 서비스나 Agent source를 패키지 payload로 받지 않는다.
+루트 `package.json#files`에는 `platform/`과 `remote-agent/`를 추가하지 않는다. npm으로 설치되는 일반 OpenCodex 사용자는 local Remote page/client는 받지만 중앙 서비스나 privileged Agent source를 package payload로 받지 않는다.
+
+## Local-first user flow
+
+```text
+ocx gui → Remote
+  → local device key + one-time polling secret
+  → opencodexpages.me GitHub OAuth and device-code approval
+  → separate Remote password
+  → reserve <slug>.opencodexpages.me and provision four Cloudflare resources
+  → pair signed Linux Agent
+  → instance hostname → GitHub ownership + Remote password → host-only session
+```
+
+GitHub is identity-only. Better Auth may need the OAuth token during the callback, but account create/update hooks discard access, refresh, and ID tokens before database persistence. The local PC receives only a revocable `ocxr_device_` token. Open signup is an explicit `PLATFORM_SIGNUP_MODE=open` deployment choice; the production bootstrap remains `private` while the signed helper and abuse controls are unfinished.
 
 ## Trust boundaries
 
@@ -68,6 +83,8 @@ Gateway의 HTTP 요청 추적 수명은 upstream `fetch()`가 헤더를 반환�
 - Remote assertion: 중앙 Gateway가 발급하고 Agent와 OpenCodex가 검증하는 `/api/*` 관리 자격증명.
 - `ocxr_` data token: instance-scoped `/v1/*` 입장 자격증명. OpenCodex origin에는 전달하지 않는다.
 - Instance session: browser가 authorization code를 교환해 얻는 host-only cookie. 공식 세션은 origin에 전달하지 않는다.
+- Remote device token: local `remote.json`에만 저장되는 `ocxr_device_` credential. GitHub token이 아니며 현재 PC 단위로 폐기한다.
+- Remote password: 중앙 Argon2id hash. GitHub session과 별개로 instance browser session 발급 전에 확인하며 5회 실패 시 15분 잠근다.
 
 [Decision Log]
 - 목적과 의도: 개인 서버의 OpenCodex 전체 GUI/API/stream을 포트 공개 없이 안전하게 원격 제공한다.

@@ -9,6 +9,7 @@ import { gatewayPublicKeyPem } from "./security";
 
 interface AppVariables {
   actor: Actor | null;
+  remoteDeviceId: string | null;
 }
 
 function errorMessage(error: unknown): string {
@@ -26,6 +27,11 @@ async function requireActor(c: Context<{ Variables: AppVariables }>): Promise<Ac
   return actor;
 }
 
+function requireRemoteDevice(c: Context<{ Variables: AppVariables }>): string | Response {
+  const deviceId = c.get("remoteDeviceId");
+  return deviceId ?? c.json({ error: "remote device authentication required" }, 401);
+}
+
 export function createControlPlaneApp(config: PlatformConfig, auth: PlatformAuth, store: PlatformStore) {
   const app = new Hono<{ Variables: AppVariables }>();
   app.use("*", secureHeaders({
@@ -41,7 +47,11 @@ export function createControlPlaneApp(config: PlatformConfig, auth: PlatformAuth
   }));
   app.use("/api/v1/*", async (c, next) => {
     let actor: Actor | null = null;
-    if (config.NODE_ENV !== "production" && config.PLATFORM_DEV_AUTH_GITHUB_ID) {
+    const device = await store.authorizeDeviceToken(bearer(c.req.raw));
+    if (device) {
+      actor = device.actor;
+      c.set("remoteDeviceId", device.deviceId);
+    } else if (config.NODE_ENV !== "production" && config.PLATFORM_DEV_AUTH_GITHUB_ID) {
       const result = await store.db.query<{ id: string; name: string; email: string; github_numeric_id: string }>(
         "SELECT id,name,email,github_numeric_id FROM users WHERE github_numeric_id=$1",
         [config.PLATFORM_DEV_AUTH_GITHUB_ID],
@@ -60,6 +70,7 @@ export function createControlPlaneApp(config: PlatformConfig, auth: PlatformAuth
         });
       }
     }
+    if (!device) c.set("remoteDeviceId", null);
     c.set("actor", actor);
     await next();
   });
@@ -67,9 +78,116 @@ export function createControlPlaneApp(config: PlatformConfig, auth: PlatformAuth
   app.on(["GET", "POST"], "/api/auth/*", c => auth.handler(c.req.raw));
   app.get("/healthz", c => c.json({ ok: true, service: "control-plane" }));
 
+  app.post("/api/v1/device-links", async c => {
+    try {
+      const body = z.object({
+        deviceName: z.string().trim().min(1).max(80),
+        platform: z.string().trim().min(1).max(40),
+        publicKey: z.string().min(40).max(512),
+      }).parse(await c.req.json());
+      const networkSignal = c.req.header("cf-connecting-ip")
+        ?? c.req.header("x-forwarded-for")?.split(",")[0]?.trim()
+        ?? "unknown";
+      return c.json(await store.createDeviceAuthorization({
+        deviceName: body.deviceName,
+        platform: body.platform,
+        publicKeyDer: Buffer.from(body.publicKey, "base64url"),
+        networkSignal,
+      }), 201);
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 400);
+    }
+  });
+
+  app.get("/api/v1/device-links/:id", async c => {
+    const pollSecret = c.req.header("x-ocxr-link-secret");
+    if (pollSecret) {
+      const result = await store.pollDeviceAuthorization(c.req.param("id"), pollSecret);
+      return result ? c.json(result) : c.json({ error: "not found" }, 404);
+    }
+    const display = await store.getDeviceAuthorizationDisplay(c.req.param("id"));
+    return display ? c.json({ request: display }) : c.json({ error: "not found" }, 404);
+  });
+
+  app.post("/api/v1/device-links/:id/approve", async c => {
+    const actor = await requireActor(c);
+    if (actor instanceof Response) return actor;
+    try {
+      return c.json({ request: await store.approveDeviceAuthorization(actor, c.req.param("id")) });
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 409);
+    }
+  });
+
+  app.post("/api/v1/device-links/:id/ack", async c => {
+    const pollSecret = c.req.header("x-ocxr-link-secret") ?? "";
+    return await store.acknowledgeDeviceAuthorization(c.req.param("id"), pollSecret)
+      ? c.json({ ok: true })
+      : c.json({ error: "not found" }, 404);
+  });
+
   app.get("/api/v1/me", async c => {
     const actor = await requireActor(c);
     return actor instanceof Response ? actor : c.json({ user: actor });
+  });
+
+  app.get("/api/v1/remote/profile", async c => {
+    const actor = await requireActor(c);
+    return actor instanceof Response ? actor : c.json({ profile: await store.remoteProfile(actor) });
+  });
+
+  app.put("/api/v1/remote/password", async c => {
+    const actor = await requireActor(c);
+    if (actor instanceof Response) return actor;
+    const body = z.object({ password: z.string().min(10).max(128) }).parse(await c.req.json());
+    await store.setRemotePassword(actor, body.password);
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/v1/remote/activate", async c => {
+    const actor = await requireActor(c);
+    if (actor instanceof Response) return actor;
+    const deviceId = requireRemoteDevice(c);
+    if (deviceId instanceof Response) return deviceId;
+    try {
+      const body = z.object({
+        name: z.string().trim().min(1).max(80),
+        slug: z.string().trim().min(1).max(63),
+      }).parse(await c.req.json());
+      return c.json({ profile: await store.activateRemoteInstance(actor, deviceId, body) }, 202);
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 400);
+    }
+  });
+
+  app.post("/api/v1/remote/pairing-code", async c => {
+    const actor = await requireActor(c);
+    if (actor instanceof Response) return actor;
+    const deviceId = requireRemoteDevice(c);
+    if (deviceId instanceof Response) return deviceId;
+    try {
+      return c.json(await store.createRemotePairingCode(actor, deviceId), 201);
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 409);
+    }
+  });
+
+  app.post("/api/v1/remote/access/:slug", async c => {
+    const actor = await requireActor(c);
+    if (actor instanceof Response) return actor;
+    try {
+      const body = z.object({ password: z.string().min(10).max(128) }).parse(await c.req.json());
+      return c.json({ url: await store.issueInstanceAuthorizationForSlug(actor, c.req.param("slug"), body.password) }, 201);
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 401);
+    }
+  });
+
+  app.delete("/api/v1/devices/current", async c => {
+    const token = bearer(c.req.raw);
+    return await store.revokeDeviceToken(token)
+      ? c.json({ ok: true })
+      : c.json({ error: "not found" }, 404);
   });
 
   app.post("/api/v1/invites/redeem", async c => {
@@ -140,7 +258,8 @@ export function createControlPlaneApp(config: PlatformConfig, auth: PlatformAuth
     const actor = await requireActor(c);
     if (actor instanceof Response) return actor;
     try {
-      return c.json({ url: await store.issueInstanceAuthorization(actor, c.req.param("id")) }, 201);
+      const body = z.object({ password: z.string().min(10).max(128) }).parse(await c.req.json());
+      return c.json({ url: await store.issueInstanceAuthorization(actor, c.req.param("id"), body.password) }, 201);
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 409);
     }

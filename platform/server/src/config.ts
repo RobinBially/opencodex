@@ -9,6 +9,7 @@ const envSchema = z.object({
   PLATFORM_INSTANCE_DOMAIN: z.string().min(3),
   PLATFORM_PRIVATE_HOSTNAME_DOMAIN: z.string().min(3).default("private.remote.opencodexpages.me"),
   PLATFORM_BOOTSTRAP_GITHUB_ID: z.string().regex(/^\d+$/),
+  PLATFORM_SIGNUP_MODE: z.enum(["private", "open"]).default("private"),
   PLATFORM_GATEWAY_ISSUER: z.string().default("opencodex-remote"),
   PLATFORM_GATEWAY_KID: z.string().default("gateway-1"),
   PLATFORM_CONTROL_PORT: z.coerce.number().int().min(1).max(65535).default(10200),
