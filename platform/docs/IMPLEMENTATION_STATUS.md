@@ -1,12 +1,12 @@
 # OpenCodex Remote MVP 구현 인수인계
 
-마지막 갱신: 2026-07-29
+마지막 갱신: 2026-07-30
 
 작업 브랜치: `ingw/remote-private-mvp-handoff`
 
-기준 브랜치/커밋: `dev` / `cfc50fbb`
+기준 브랜치/커밋: `dev` / `67c731e6`
 
-이 문서는 다른 컴퓨터에서 작업을 바로 이어가기 위한 현재 상태의 기준 문서다. PostgreSQL 17과 실제 Control Plane·worker·Gateway 프로세스를 사용하는 로컬 통합 검증은 완료됐다. 실제 Cloudflare 계정·VPS·Rust Agent를 모두 연결한 Phase 0 및 운영 E2E는 아직 완료되지 않았다.
+이 문서는 다른 컴퓨터에서 작업을 바로 이어가기 위한 현재 상태의 기준 문서다. PostgreSQL 17과 실제 Control Plane·worker·Gateway 프로세스를 사용하는 로컬 통합 검증은 완료됐다. 실제 Cloudflare account의 Linux Mesh/private-hostname transport와 Rust Agent 포함 30분 stream은 통과했고, 실제 OpenCodex process 및 public ingress를 포함한 운영 E2E는 아직 완료되지 않았다.
 
 ## 문서와 디자인 자산
 
@@ -55,8 +55,12 @@
 - `FOR UPDATE SKIP LOCKED` worker와 provision/suspend/delete job 골격 추가.
 - Tunnel secret AES-256-GCM envelope 저장과 audit network HMAC 추가.
 - Cloudflare API adapter와 로컬 fake adapter 추가.
+- API token과 Global API Key(`X-Auth-Email` + `X-Auth-Key`) 인증을 모두 지원.
 - Tunnel 연결 상태는 전용 `/cfd_tunnel/{id}/connections` endpoint만 사용.
 - private hostname route는 `/zerotrust/routes/hostname` endpoint 사용.
+- Tunnel token 조회는 현재 API의 `GET /cfd_tunnel/{id}/token`을 사용.
+- `*.private.remote.opencodexpages.me` DNS-only A record, 고유 RFC1918 `/32`, narrow CIDR activation route를 hostname route보다 먼저 생성.
+- suspend/delete 시 hostname route → CIDR route → DNS record → Tunnel 순서로 제거.
 
 ### Gateway
 
@@ -76,7 +80,7 @@
 - `remote-agent/` Rust 2024 package와 lockfile 추가.
 - Ed25519 키 생성·pairing·challenge 응답·heartbeat 구현.
 - Agent config와 Tunnel token을 `0600`으로 원자 저장.
-- `127.0.0.1:10101` local ingress 구현.
+- Control Plane이 배정한 `10.192.0.0/10` `/32`만 허용. privileged `prepare-network`가 `ip address replace ... dev lo`를 수행하고 비특권 `run`은 `<assigned-ip>:10101` local ingress를 실행.
 - assertion signature/scope/method/path/time/replay 검증 구현.
 - 사용자 control header 제거, Host·Origin loopback 정규화.
 - streaming HTTP body와 WebSocket 양방향 relay 구현.
@@ -104,10 +108,25 @@
 - Gateway 재시작 후 재연결과 suspend `NOTIFY`에 의한 진행 중 stream 취소 확인.
 - 중첩 SPA 경로는 production HTML, 미등록 API 경로는 JSON `404`인지 확인.
 
+### 실제 Cloudflare Phase 0 transport
+
+- `opencodexpages.me` active zone과 실제 Zero Trust account API shape 검증.
+- DNS-only RFC1918 A record → `/32` CIDR activation route → hostname route → dedicated Tunnel 순서 검증.
+- Linux Cloudflare Mesh node `warp-cli 2026.6.880.0`에서 private hostname이 `100.80.0.0/16` synthetic IP로 해석되고 Tunnel origin까지 HTTP 200 확인.
+- `cloudflared 2026.3.0`, QUIC 4 connections, 수동 `max-active-flows` override 없이 통과.
+- 10회 HTTP 19.37–23.68 ms, 100 MiB download 1.500초, 100 MiB upload 정확한 byte count, SSE smoke, WebSocket echo 통과.
+- Tunnel restart 시 active SSE는 약 17.05초에 종료됐고 신규 HTTP data plane은 39.632초에 복구. 최소 60초 health grace 필요.
+- 실제 Control Plane/worker가 live Cloudflare 리소스 4개를 만들고 Rust Agent pair, 전용 `/32` loopback bind, 4 Tunnel connections, heartbeat를 확인.
+- 실제 Mesh Gateway의 `ocxr_` 요청이 Rust Agent assertion 검증을 거쳐 origin 200을 반환했고 무자격 요청은 404로 은닉.
+- Rust Agent 포함 100 MiB download 1.707초, upload 정확한 byte count, SSE smoke, WebSocket echo 통과.
+- transport-only 30분 SSE는 rc 0, 1,801초, 정확히 1,800 events로 통과.
+- 실제 Rust Agent 포함 30분 SSE도 rc 0, 1,800초, 정확히 1,800 events로 통과.
+- 재현 절차와 실패 원인은 [CLOUDFLARE_PHASE0_2026-07-30.md](./CLOUDFLARE_PHASE0_2026-07-30.md)에 기록.
+
 ## 구현 중인 부분
 
 - 실제 Rust Agent와 OpenCodex를 포함한 Gateway WebSocket/client disconnect E2E.
-- 실제 Cloudflare Mesh에서 30분 stream, reconnect, Tunnel/Gateway 재시작 측정.
+- 실제 OpenCodex process를 포함한 E2E와 Gateway 프로세스 재시작 측정. Mesh transport/Rust Agent 30분과 Tunnel 재시작은 완료.
 - suspend/delete saga의 Cloudflare 부분 실패 재시도와 orphan reconciliation.
 - Agent 설치·OpenCodex 설정 반영을 한 번에 수행하는 서명 검증 installer.
 - 네이티브 systemd 서비스와 `LoadCredential=` 배포 파일.
@@ -120,8 +139,8 @@
 - [x] `platform` typecheck/build, root 전체 테스트, Rust fmt/clippy/test 재실행.
 - [x] PostgreSQL 17 migration과 Better Auth schema/CRUD 호환 검증.
 - [x] 실제 Control Plane·worker·Gateway를 동시에 띄우는 로컬 통합 테스트.
-- [ ] 실제 Cloudflare Mesh 계정 Phase 0. 현재 작업 환경에는 Account ID/API token이 없다.
-- [ ] 실제 Mesh/Rust Agent에서 30분 stream과 Tunnel 재시작 측정. 로컬 Gateway 기준 HTTP/SSE/WS, cancel/reconnect, 100 MiB body, Gateway 재시작은 통과했다.
+- [x] 실제 Cloudflare Mesh account Phase 0 core transport. DNS, CIDR activation, hostname route, Tunnel, Linux Mesh HTTP/SSE/WS/100 MiB를 확인했다.
+- [x] 실제 Mesh/Rust Agent에서 30분 stream. transport와 Agent 경로 모두 1,800 events로 통과했고 Tunnel 재시작은 신규 요청 39.632초 복구로 확인했다.
 - [x] 두 사용자·두 인스턴스 교차 hostname/token/session/assertion 접근 `404` 검증.
 
 ### P1 — 운영 기능
@@ -129,8 +148,8 @@
 - native systemd unit 3개와 중앙 `cloudflared`, Linux Mesh node unit 작성.
 - Agent `amd64`/`arm64` musl release workflow.
 - Agent binary와 installer의 SHA-256 + Ed25519 detached signature 검증.
-- suspend 시 Tunnel token rotation과 Connector 종료를 Cloudflare 현재 API 기준으로 확정.
-- resume 흐름 추가. 현재 suspend worker는 연결 종료를 확실히 하기 위해 Tunnel을 삭제하며 resume은 미구현이다.
+- suspend 시 hostname/CIDR/DNS를 먼저 제거하고 Cloudflare connector-cleanup API로 모든 연결을 끊은 뒤 Tunnel을 삭제하는 흐름을 실제 활성 Agent에서 확인했다.
+- resume 흐름 추가. 현재 suspend worker는 연결 종료를 확실히 하기 위해 Tunnel과 token을 폐기하며 resume은 미구현이다.
 - delete saga 단계별 idempotency와 orphan resource reconciler 추가.
 - Gateway rate limit, 동시 연결/본문 크기 정책, abuse report/admin UI 추가.
 - audit 조회·90일 retention job, 일일 암호화 backup, 7일/4주 retention, restore drill 추가.
@@ -150,12 +169,12 @@
 ## 알려진 차이와 위험
 
 - 원 기획서의 Workers VPC/fallback보다 이후 확정안인 Cloudflare Mesh private hostname route가 우선한다. Mesh 실패 시 자동 fallback하지 않는다.
-- 실제 private hostname이 Agent 서버에서 `127.0.0.1:10101`로 resolve되도록 installer가 hosts/resolver를 구성해야 한다. 아직 자동화되지 않았다.
-- Cloudflare adapter의 route create/delete 응답 shape는 live account로 검증하지 않았다.
+- private hostname은 `127.0.0.1` hosts가 아니라 DNS-only RFC1918 A record를 사용한다. Agent `prepare-network`는 구현했지만 installer/systemd의 privileged `ExecStartPre`와 비특권 runtime unit은 아직 미구현이다.
+- Cloudflare Tunnel, DNS, CIDR route, hostname route create/delete와 token GET 응답 shape를 live account로 검증했다.
 - Gateway synthetic token은 별도 systemd credential로 설계했지만 배포 파일은 아직 없다.
 - Better Auth의 OAuth account에는 GitHub access token이 저장될 수 있다. 운영 전 DB encryption/토큰 최소 보존 정책을 확정해야 한다.
-- Gateway는 로컬 100 MiB 양방향 streaming과 취소를 통과했지만, Rust Agent를 포함한 부하·backpressure·30분 stream은 아직 측정하지 않았다.
-- 실제 DNS, TLS, 두 registrable domain, Cloudflare public ingress는 구성하지 않았다.
+- Gateway와 Rust Agent는 100 MiB 양방향 streaming, SSE/WS, 30분 stream을 통과했다. 실제 OpenCodex process와 public ingress를 포함한 부하·backpressure는 아직 측정하지 않았다.
+- private `opencodexpages.me` DNS record는 Phase 0에서 검증했다. public wildcard ingress, TLS, official `opencodex.me`와 instance `opencodexpages.me` 쿠키/OAuth 분리는 아직 구성하지 않았다.
 
 ## 현재까지 확인된 검증
 
@@ -164,9 +183,14 @@ PASS  bun run typecheck                         (root)
 PASS  bun test tests/server-management-auth.test.ts
       16 tests / 56 expects
 PASS  bun test --isolate tests
-      5961 pass / 1 skip / 0 fail / 30318 expects
+      6030 pass / 2 skip / 0 fail / 30540 expects
 PASS  bun run privacy:scan
 PASS  cd platform && bun run typecheck
+PASS  cd platform && bun test server/tests/cloudflare.test.ts
+      5 tests / 22 expects
+PASS  cd platform && CLOUDFLARE_LIVE_TESTS=true ... \
+      bun test server/tests/cloudflare-live.test.ts
+      1 test / 7 expects, live create/delete cleanup
 PASS  cd platform && VITE_REMOTE_DEMO=true bun run build:web
 PASS  cd platform && PLATFORM_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55432/postgres \
       bun test server/tests/postgres-integration.test.ts
@@ -175,13 +199,13 @@ PASS  cd remote-agent && cargo fmt --check
 PASS  cd remote-agent && cargo check
 PASS  cd remote-agent && cargo clippy --all-targets --all-features -- -D warnings
 PASS  cd remote-agent && cargo test
-      2 Rust unit tests
+      3 Rust unit tests
 ```
 
 아직 통과로 간주하면 안 되는 항목:
 
-- 실제 Cloudflare Mesh Phase 0
-- 실제 Rust Agent/OpenCodex를 포함한 HTTP/SSE/WebSocket E2E와 30분 stream/Tunnel 재시작
+- 실제 Gateway 프로세스 재시작 측정
+- 실제 OpenCodex process와 public ingress를 포함한 HTTP/SSE/WebSocket 운영 E2E
 - 시각 QA와 접근성 브라우저 QA
 - systemd/VPS/backup restore 검증
 

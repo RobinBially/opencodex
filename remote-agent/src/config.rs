@@ -1,5 +1,6 @@
 use std::{
     fs,
+    net::Ipv4Addr,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
@@ -32,6 +33,7 @@ pub struct AgentConfig {
     pub signing_key: String,
     pub tunnel_token_file: PathBuf,
     pub gateway: GatewayConfig,
+    pub private_origin_ip: Ipv4Addr,
     #[serde(default = "default_opencodex_url")]
     pub opencodex_url: String,
     #[serde(default = "default_ingress")]
@@ -50,6 +52,7 @@ impl AgentConfig {
         let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
         let config: Self = serde_json::from_slice(&bytes).context("parse agent config")?;
         config.signing_key()?;
+        config.validate_private_origin_ip()?;
         Ok(config)
     }
 
@@ -74,6 +77,17 @@ impl AgentConfig {
             .map_err(|_| anyhow::anyhow!("signing key must contain 32 bytes"))?;
         Ok(SigningKey::from_bytes(&seed))
     }
+
+    pub fn validate_private_origin_ip(&self) -> Result<()> {
+        let octets = self.private_origin_ip.octets();
+        if octets[0] != 10 || octets[1] < 192 {
+            anyhow::bail!("private origin IP must be in 10.192.0.0/10");
+        }
+        if self.ingress != format!("{}:10101", self.private_origin_ip) {
+            anyhow::bail!("ingress must match the assigned private origin IP on port 10101");
+        }
+        Ok(())
+    }
 }
 
 pub fn save_secret(path: &Path, value: &str) -> Result<()> {
@@ -86,4 +100,46 @@ pub fn save_secret(path: &Path, value: &str) -> Result<()> {
     fs::rename(&temporary, path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(private_origin_ip: Ipv4Addr, ingress: &str) -> AgentConfig {
+        AgentConfig {
+            control_plane_url: "https://remote.example.test".into(),
+            agent_id: "agent".into(),
+            instance_id: "instance".into(),
+            signing_key: URL_SAFE_NO_PAD.encode([0_u8; 32]),
+            tunnel_token_file: "/tmp/tunnel-token".into(),
+            gateway: GatewayConfig {
+                issuer: "issuer".into(),
+                keys: vec![],
+            },
+            private_origin_ip,
+            opencodex_url: default_opencodex_url(),
+            ingress: ingress.into(),
+        }
+    }
+
+    #[test]
+    fn private_origin_ip_must_be_reserved_and_match_ingress() {
+        let allowed = Ipv4Addr::new(10, 223, 1, 9);
+        assert!(
+            config(allowed, "10.223.1.9:10101")
+                .validate_private_origin_ip()
+                .is_ok()
+        );
+        assert!(
+            config(Ipv4Addr::new(10, 10, 1, 9), "10.10.1.9:10101")
+                .validate_private_origin_ip()
+                .is_err()
+        );
+        assert!(
+            config(allowed, "127.0.0.1:10101")
+                .validate_private_origin_ip()
+                .is_err()
+        );
+    }
 }

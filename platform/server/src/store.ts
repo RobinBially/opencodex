@@ -42,6 +42,7 @@ interface InstanceRow {
   name: string;
   slug: string;
   private_hostname: string;
+  private_origin_ip: string;
   status: InstanceStatus;
   created_at: Date;
   updated_at: Date;
@@ -62,6 +63,11 @@ function instanceFromRow(row: InstanceRow): InstanceRecord {
 
 function duplicateConstraint(error: unknown): boolean {
   return !!error && typeof error === "object" && (error as { code?: string }).code === "23505";
+}
+
+function issuePrivateOriginIp(): string {
+  const bytes = randomBytes(3);
+  return `10.${192 + bytes[0] % 64}.${bytes[1]}.${1 + bytes[2] % 254}`;
 }
 
 export class PlatformStore {
@@ -133,15 +139,16 @@ export class PlatformStore {
     const slug = input.slug.trim().toLowerCase();
     if (name.length < 1 || name.length > 80) throw new Error("name must be 1-80 characters");
     if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(slug)) throw new Error("invalid slug");
-    const privateHostname = `${randomBytes(20).toString("hex")}.ocxr.internal`;
+    const privateHostname = `${randomBytes(20).toString("hex")}.${this.config.PLATFORM_PRIVATE_HOSTNAME_DOMAIN}`;
+    const privateOriginIp = issuePrivateOriginIp();
     try {
       return await this.db.transaction(async client => {
         const tombstone = await client.query("SELECT 1 FROM slug_tombstones WHERE slug=$1 AND expires_at>now()", [slug]);
         if (tombstone.rowCount) throw new Error("slug is temporarily reserved");
         const result = await client.query<InstanceRow>(
-          `INSERT INTO instances(owner_id,name,slug,private_hostname)
-           VALUES($1,$2,$3,$4) RETURNING *`,
-          [actor.id, name, slug, privateHostname],
+          `INSERT INTO instances(owner_id,name,slug,private_hostname,private_origin_ip)
+           VALUES($1,$2,$3,$4,$5) RETURNING *`,
+          [actor.id, name, slug, privateHostname, privateOriginIp],
         );
         await client.query(
           `INSERT INTO provisioning_jobs(instance_id,kind,idempotency_key)
@@ -171,7 +178,7 @@ export class PlatformStore {
   }
 
   async consumePairingCode(input: { code: string; publicKeyDer: Buffer; version: string }): Promise<{
-    agentId: string; instanceId: string; tunnelToken: string;
+    agentId: string; instanceId: string; tunnelToken: string; privateOriginIp: string;
   }> {
     if (input.publicKeyDer.length < 32 || input.publicKeyDer.length > 256) throw new Error("invalid Ed25519 public key");
     return this.db.transaction(async client => {
@@ -195,12 +202,18 @@ export class PlatformStore {
         [row.instance_id],
       );
       if (!resource.rows[0]?.encrypted_secret) throw new Error("tunnel token is not provisioned");
+      const instance = await client.query<{ private_origin_ip: string }>(
+        "SELECT host(private_origin_ip) AS private_origin_ip FROM instances WHERE id=$1",
+        [row.instance_id],
+      );
+      if (!instance.rows[0]?.private_origin_ip) throw new Error("private origin IP is not provisioned");
       await client.query("UPDATE pairing_codes SET consumed_at=now() WHERE id=$1", [row.id]);
       await client.query("UPDATE instances SET status='connecting',updated_at=now() WHERE id=$1", [row.instance_id]);
       return {
         agentId: agent.rows[0].id,
         instanceId: row.instance_id,
         tunnelToken: decryptSecret(resource.rows[0].encrypted_secret, this.config.encryptionKey),
+        privateOriginIp: instance.rows[0].private_origin_ip,
       };
     });
   }
@@ -399,7 +412,12 @@ export class PlatformStore {
     return status;
   }
 
-  async saveCloudflareResource(instanceId: string, resourceType: "tunnel" | "hostname_route", externalId: string, secret?: string): Promise<void> {
+  async saveCloudflareResource(
+    instanceId: string,
+    resourceType: "tunnel" | "private_dns" | "cidr_activation_route" | "hostname_route",
+    externalId: string,
+    secret?: string,
+  ): Promise<void> {
     await this.db.query(
       `INSERT INTO cloudflare_resources(instance_id,resource_type,external_id,encrypted_secret)
        VALUES($1,$2,$3,$4)

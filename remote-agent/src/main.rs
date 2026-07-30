@@ -4,7 +4,7 @@ mod control;
 mod proxy;
 mod supervisor;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, process::Command as ProcessCommand};
 
 use anyhow::{Context, Result};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -42,6 +42,10 @@ enum Command {
         #[arg(long, default_value = "/var/lib/opencodex-remote/agent.json")]
         config: PathBuf,
     },
+    PrepareNetwork {
+        #[arg(long, default_value = "/var/lib/opencodex-remote/agent.json")]
+        config: PathBuf,
+    },
     PrintOpencodexConfig {
         #[arg(long, default_value = "/var/lib/opencodex-remote/agent.json")]
         config: PathBuf,
@@ -70,6 +74,10 @@ async fn main() -> Result<()> {
         } => {
             let key = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
             let paired = control::pair(&control_plane, &code.trim().to_uppercase(), &key).await?;
+            let private_origin_ip = paired
+                .private_origin_ip
+                .parse()
+                .context("parse private origin IP")?;
             save_secret(&tunnel_token_file, &paired.tunnel_token)?;
             AgentConfig {
                 control_plane_url: control_plane,
@@ -78,12 +86,13 @@ async fn main() -> Result<()> {
                 signing_key: URL_SAFE_NO_PAD.encode(key.to_bytes()),
                 tunnel_token_file,
                 gateway: paired.gateway,
+                private_origin_ip,
                 opencodex_url: "http://127.0.0.1:10100".into(),
-                ingress: "127.0.0.1:10101".into(),
+                ingress: format!("{private_origin_ip}:10101"),
             }
             .save(&config)?;
             println!(
-                "Paired successfully. Run `opencodex-remote-agent print-opencodex-config` and merge the displayed remoteAccess block into OpenCodex config."
+                "Paired successfully. Run `opencodex-remote-agent prepare-network`, then start the Agent and merge the `print-opencodex-config` remoteAccess block into OpenCodex config."
             );
         }
         Command::PrintOpencodexConfig { config } => {
@@ -99,6 +108,20 @@ async fn main() -> Result<()> {
                     }
                 }))?
             );
+        }
+        Command::PrepareNetwork { config } => {
+            let config = AgentConfig::load(&config)?;
+            let address = format!("{}/32", config.private_origin_ip);
+            let status = ProcessCommand::new("ip")
+                .args(["address", "replace", &address, "dev", "lo"])
+                .status()
+                .context("run ip address replace for private origin")?;
+            if !status.success() {
+                anyhow::bail!(
+                    "failed to assign private origin IP to loopback; run prepare-network as root"
+                );
+            }
+            println!("Private origin {address} is ready on loopback.");
         }
         Command::Run { config } => {
             let config = AgentConfig::load(&config)?;

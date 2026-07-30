@@ -78,6 +78,7 @@ CREATE TABLE instances (
   name text NOT NULL,
   slug text NOT NULL,
   private_hostname text NOT NULL UNIQUE,
+  private_origin_ip inet NOT NULL UNIQUE,
   status instance_status NOT NULL DEFAULT 'pending',
   suspended_at timestamptz,
   deleted_at timestamptz,

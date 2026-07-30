@@ -7,6 +7,7 @@ const envSchema = z.object({
   PLATFORM_DATABASE_URL: z.string().min(1),
   PLATFORM_BASE_URL: z.string().url(),
   PLATFORM_INSTANCE_DOMAIN: z.string().min(3),
+  PLATFORM_PRIVATE_HOSTNAME_DOMAIN: z.string().min(3).default("private.remote.opencodexpages.me"),
   PLATFORM_BOOTSTRAP_GITHUB_ID: z.string().regex(/^\d+$/),
   PLATFORM_GATEWAY_ISSUER: z.string().default("opencodex-remote"),
   PLATFORM_GATEWAY_KID: z.string().default("gateway-1"),
@@ -14,6 +15,8 @@ const envSchema = z.object({
   PLATFORM_GATEWAY_PORT: z.coerce.number().int().min(1).max(65535).default(10201),
   PLATFORM_DEV_AUTH_GITHUB_ID: z.string().regex(/^\d+$/).optional(),
   CLOUDFLARE_ACCOUNT_ID: z.string().optional(),
+  CLOUDFLARE_ZONE_ID: z.string().optional(),
+  CLOUDFLARE_AUTH_EMAIL: z.string().email().optional(),
   CLOUDFLARE_API_BASE_URL: z.string().url().default("https://api.cloudflare.com/client/v4"),
   CLOUDFLARE_MESH_ENABLED: z.enum(["true", "false"]).default("false"),
   BETTER_AUTH_SECRET: z.string().min(32).optional(),
@@ -34,6 +37,7 @@ function credential(name: string, envValue?: string): string | undefined {
 
 export interface PlatformConfig extends z.infer<typeof envSchema> {
   cloudflareApiToken?: string;
+  cloudflareAuthEmail?: string;
   gatewayPrivateKeyPem: string;
   encryptionKey: Buffer;
   auditHmacKey: Buffer;
@@ -61,6 +65,7 @@ export function loadPlatformConfig(env: NodeJS.ProcessEnv = process.env): Platfo
   return {
     ...parsed,
     cloudflareApiToken: credential("cloudflare-api-token", env.CLOUDFLARE_API_TOKEN),
+    cloudflareAuthEmail: credential("cloudflare-auth-email", env.CLOUDFLARE_AUTH_EMAIL),
     gatewayPrivateKeyPem,
     encryptionKey: Buffer.from(encryptionKeyValue, "base64url"),
     auditHmacKey: Buffer.from(auditHmacValue, "base64url"),

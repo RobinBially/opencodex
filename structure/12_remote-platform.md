@@ -20,6 +20,7 @@ OpenCodex Remote는 기존 npm 패키지에 포함되지 않는 별도 중앙 �
 4. Rust Agent는 Gateway assertion을 검증하고 모든 proxy/control header를 정규화한다.
 5. OpenCodex management API는 Agent를 신뢰해 생략하지 않고 assertion을 다시 검증한다.
 6. Control Plane만 Cloudflare account token을 보유한다. Agent는 자기 Tunnel token만 받는다.
+7. Control Plane은 인스턴스별 `10.192.0.0/10` `/32`를 할당한다. Agent는 이 범위와 `10101`의 정확한 조합만 loopback ingress로 허용한다.
 
 ## Data flow
 
@@ -28,10 +29,23 @@ public instance hostname
   → Gateway ownership/session/token check
   → 30-second Ed25519 request assertion
   → Mesh private hostname route
+  → DNS-only private origin A record + narrow /32 activation route
   → per-instance cloudflared
-  → Agent assertion/replay/header validation
+  → Agent loopback alias:10101 assertion/replay/header validation
   → loopback OpenCodex
 ```
+
+### Private origin addressing invariant
+
+`cloudflared`의 hostname-route 가상 DNS는 `/etc/hosts`의 `127.0.0.1` 매핑을 사용하지 않았고, loopback DNS 답은 Gateway synthetic IP로 변환되지 않았다. 따라서 Control Plane은 추측 불가능한 private hostname에 DNS-only RFC1918 A record를 먼저 만들고, 같은 `/32` CIDR route와 hostname route를 instance Tunnel에 연결한다. Agent는 할당된 `/32`를 `lo`에 추가해 LAN listener 없이 cloudflared가 origin을 해석하고 접속하게 한다.
+
+[Decision Log]
+- 목적과 의도: private hostname routing을 실제 Cloudflare DNS/connector 동작과 일치시키면서 Agent ingress를 LAN에 노출하지 않는다.
+- 기존 구현 및 제약 조건: `127.0.0.1` hosts 매핑은 cloudflared virtual DNS에서 NXDOMAIN이었고 hostname route만으로는 Tunnel `warp-routing`이 활성화되지 않았다.
+- 검토한 주요 대안: LAN IP에 `0.0.0.0` bind, public Tunnel hostname, custom DNS resolver, RFC1918 loopback alias와 `/32` activation route.
+- 선택한 방식: `10.192.0.0/10` 고유 `/32`를 privileged `prepare-network` 단계에서 Agent loopback에 bind하고 DNS record, CIDR route, hostname route를 함께 lifecycle 관리한다.
+- 다른 대안 대신 이 방식을 선택한 이유: public origin이나 LAN listener 없이 현재 Cloudflare API와 Mesh data plane에서 종단 연결이 실측 통과했다.
+- 장점, 단점 및 영향: origin은 로컬 전용이고 중앙 정책을 우회하지 않지만 인스턴스당 Cloudflare 리소스 네 개와 loopback 주소 관리가 추가된다. Agent runtime 자체는 `CAP_NET_ADMIN`을 보유하지 않는다.
 
 SSE와 HTTP response body는 buffer를 만들지 않고 전달한다. WebSocket은 Gateway와 Agent 두 hop에서 양방향으로 relay한다. 각 hop은 downstream disconnect를 upstream close/abort로 전파해야 한다.
 

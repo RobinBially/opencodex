@@ -336,7 +336,7 @@ postgresTest("PostgreSQL 17 auth, lifecycle, isolation, and streaming stay compa
       );
       return state.rows.length === 2
         && state.rows.every(row => row.status === "awaiting_agent")
-        && resources.rows[0]?.count === 4
+        && resources.rows[0]?.count === 8
         ? true
         : null;
     });

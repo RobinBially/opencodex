@@ -10,7 +10,7 @@ Browser / CLI
   → VPS Auth Gateway
   → Cloudflare Mesh private hostname route
   → per-instance Tunnel
-  → Rust Agent 127.0.0.1:10101
+  → Rust Agent assigned RFC1918 loopback:10101
   → OpenCodex 127.0.0.1:10100
 ```
 
@@ -18,6 +18,16 @@ Browser / CLI
 - `*.instance-domain`은 언제나 중앙 Gateway로 향한다.
 - Gateway만 DB의 추측 불가능한 private hostname을 목적지로 사용한다.
 - 중앙 시스템은 Docker 없이 Ubuntu 24.04 VPS의 native systemd로 운영한다.
+- private hostname은 `*.private.remote.opencodexpages.me` DNS-only A record로 인스턴스별 `10.192.0.0/10` `/32`를 가리킨다.
+- 같은 `/32` CIDR activation route와 hostname route를 dedicated Tunnel에 연결하며, Agent는 그 주소를 `lo`에만 할당한다.
+
+[Decision Log]
+- 목적과 의도: live Cloudflare Mesh에서 검증된 hostname routing 전제조건을 프로비저닝과 Agent에 고정한다.
+- 기존 구현 및 제약 조건: `127.0.0.1` hosts 해석과 hostname route 단독 구성은 실제 account에서 TCP data plane을 열지 못했다.
+- 검토한 주요 대안: public Tunnel route, LAN listener, custom resolver, 고유 RFC1918 loopback alias.
+- 선택한 방식: DNS record 생성 후 `/32` activation route와 hostname route를 만들고 Agent가 alias를 loopback에 bind한다.
+- 다른 대안 대신 이 방식을 선택한 이유: public service exposure 없이 Mesh synthetic IP와 Tunnel origin resolution이 모두 통과했다.
+- 장점, 단점 및 영향: provisioning/deletion saga가 네 Cloudflare 리소스를 다룬다. 별도 `prepare-network` 단계만 root 또는 `CAP_NET_ADMIN`이 필요하고 장시간 Agent runtime은 비특권으로 실행한다.
 
 ## 보안 기준
 

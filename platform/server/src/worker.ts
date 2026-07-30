@@ -48,6 +48,25 @@ async function resource(instanceId: string, type: string): Promise<string | null
   return result.rows[0]?.external_id ?? null;
 }
 
+async function deleteTunnelAndConnections(tunnelId: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    // Cloudflare rejects ordinary Tunnel deletion while a connector is live.
+    // Cleanup is the documented equivalent of `cloudflared tunnel delete -f`;
+    // retrying closes the narrow race where an old-token Agent reconnects.
+    await cloudflare.cleanupTunnelConnections(tunnelId);
+    try {
+      await cloudflare.deleteTunnel(tunnelId);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!(error instanceof Error) || !error.message.toLowerCase().includes("active connections")) throw error;
+      await Bun.sleep(500);
+    }
+  }
+  throw lastError ?? new Error("Tunnel deletion failed after connector cleanup");
+}
+
 async function provision(job: Job): Promise<void> {
   await database.query("UPDATE instances SET status='provisioning',updated_at=now() WHERE id=$1", [job.instance_id]);
   let tunnelId = await resource(job.instance_id, "tunnel");
@@ -57,10 +76,31 @@ async function provision(job: Job): Promise<void> {
     tunnelId = tunnel.id;
     await database.query("UPDATE provisioning_jobs SET step='tunnel_created',updated_at=now() WHERE id=$1", [job.id]);
   }
+  const instance = await database.query<{ private_hostname: string; private_origin_ip: string }>(
+    "SELECT private_hostname,host(private_origin_ip) AS private_origin_ip FROM instances WHERE id=$1",
+    [job.instance_id],
+  );
+  const destination = instance.rows[0];
+  if (!destination) throw new Error("instance not found");
+  let dnsRecordId = await resource(job.instance_id, "private_dns");
+  if (!dnsRecordId) {
+    dnsRecordId = await cloudflare.createPrivateDnsRecord(destination.private_hostname, destination.private_origin_ip);
+    await store.saveCloudflareResource(job.instance_id, "private_dns", dnsRecordId);
+    await database.query("UPDATE provisioning_jobs SET step='dns_created',updated_at=now() WHERE id=$1", [job.id]);
+    // Live Phase 0 showed that querying before the zone edge had the new A
+    // record could cache NXDOMAIN for the SOA negative TTL. Human pairing is
+    // usually slower, but provisioning must also be safe for automated Agents.
+    if (config.CLOUDFLARE_MESH_ENABLED === "true") await Bun.sleep(15_000);
+  }
+  let cidrRouteId = await resource(job.instance_id, "cidr_activation_route");
+  if (!cidrRouteId) {
+    cidrRouteId = await cloudflare.createCidrActivationRoute(tunnelId, destination.private_origin_ip);
+    await store.saveCloudflareResource(job.instance_id, "cidr_activation_route", cidrRouteId);
+    await database.query("UPDATE provisioning_jobs SET step='cidr_route_created',updated_at=now() WHERE id=$1", [job.id]);
+  }
   let routeId = await resource(job.instance_id, "hostname_route");
   if (!routeId) {
-    const instance = await database.query<{ private_hostname: string }>("SELECT private_hostname FROM instances WHERE id=$1", [job.instance_id]);
-    routeId = await cloudflare.createPrivateHostnameRoute(tunnelId, instance.rows[0].private_hostname);
+    routeId = await cloudflare.createPrivateHostnameRoute(tunnelId, destination.private_hostname);
     await store.saveCloudflareResource(job.instance_id, "hostname_route", routeId);
     await database.query("UPDATE provisioning_jobs SET step='route_created',updated_at=now() WHERE id=$1", [job.id]);
   }
@@ -73,12 +113,21 @@ async function deactivateCloudflare(instanceId: string): Promise<void> {
     await cloudflare.disablePrivateHostnameRoute(routeId);
     await database.query("UPDATE cloudflare_resources SET disabled_at=now(),deleted_at=now() WHERE instance_id=$1 AND resource_type='hostname_route'", [instanceId]);
   }
+  const cidrRouteId = await resource(instanceId, "cidr_activation_route");
+  if (cidrRouteId) {
+    await cloudflare.deleteCidrActivationRoute(cidrRouteId);
+    await database.query("UPDATE cloudflare_resources SET disabled_at=now(),deleted_at=now() WHERE instance_id=$1 AND resource_type='cidr_activation_route'", [instanceId]);
+  }
+  const dnsRecordId = await resource(instanceId, "private_dns");
+  if (dnsRecordId) {
+    await cloudflare.deletePrivateDnsRecord(dnsRecordId);
+    await database.query("UPDATE cloudflare_resources SET disabled_at=now(),deleted_at=now() WHERE instance_id=$1 AND resource_type='private_dns'", [instanceId]);
+  }
   const tunnelId = await resource(instanceId, "tunnel");
   if (tunnelId) {
-    // Deleting the tunnel is the only documented central operation that also
-    // guarantees every live connector is disconnected. Resume provisions a
-    // fresh tunnel and token rather than trusting a rotated-but-live connector.
-    await cloudflare.deleteTunnel(tunnelId);
+    // Resume provisions a fresh Tunnel and token. Central connector cleanup
+    // ensures suspend does not depend on the Agent being online or cooperative.
+    await deleteTunnelAndConnections(tunnelId);
     await database.query("UPDATE cloudflare_resources SET deleted_at=now(),encrypted_secret=NULL WHERE instance_id=$1 AND resource_type='tunnel'", [instanceId]);
   }
 }
@@ -103,7 +152,7 @@ async function remove(job: Job): Promise<void> {
 }
 
 async function finish(job: Job): Promise<void> {
-  await database.query("UPDATE provisioning_jobs SET status='completed',locked_at=NULL,locked_by=NULL,updated_at=now() WHERE id=$1", [job.id]);
+  await database.query("UPDATE provisioning_jobs SET status='completed',last_error=NULL,locked_at=NULL,locked_by=NULL,updated_at=now() WHERE id=$1", [job.id]);
 }
 
 async function fail(job: Job, error: unknown): Promise<void> {

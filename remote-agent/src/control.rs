@@ -24,6 +24,7 @@ pub struct PairResponse {
     pub agent_id: String,
     pub instance_id: String,
     pub tunnel_token: String,
+    pub private_origin_ip: String,
     pub gateway: GatewayConfig,
 }
 
