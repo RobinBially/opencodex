@@ -13,6 +13,37 @@ OpenCodex Remote는 로컬 `ocx gui` 계정/기기 설정, 중앙 Control Plane/
 
 중앙 플랫폼 source는 npm package에 포함하지 않는다. 일반 OCX release에는 플랫폼별로 빌드·서명된 최소 Agent binary만 `bin/remote-agent/<platform>-<arch>/`에 동봉해야 한다. 런타임 `cargo build`는 금지한다.
 
+## Signed multi-platform Agent bundle
+
+지원 bundle은 정확히 여섯 개다.
+
+| Package path | Rust target | GitHub runner |
+| --- | --- | --- |
+| `linux-x64` | `x86_64-unknown-linux-musl` | `ubuntu-24.04` |
+| `linux-arm64` | `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` |
+| `macos-x64` | `x86_64-apple-darwin` | `macos-15-intel` |
+| `macos-arm64` | `aarch64-apple-darwin` | `macos-15` |
+| `windows-x64` | `x86_64-pc-windows-msvc` | `windows-latest` |
+| `windows-arm64` | `aarch64-pc-windows-msvc` | `windows-11-arm` |
+
+`.github/workflows/ci.yml`은 pinned Rust `1.97.1`로 각 native runner에서 fmt, clippy, test, release build를 수행한다. 수동 release workflow는 같은 matrix를 다시 build해 1일 보관 Actions artifact로 publish job에 넘긴다. 보호된 `remote-agent-release` Environment 승인을 통과한 실제 publish job만 Environment secret `REMOTE_AGENT_SIGNING_KEY`를 파일 mode `0600`으로 잠깐 materialize하고, `scripts/remote-agent-bundle.ts`가 다음을 생성한다.
+
+- npm payload: `bin/remote-agent/<package>/opencodex-remote-agent[.exe]`
+- exact six-entry `remote-agent-manifest.json`: npm package version, source commit, release filename, SHA-256, raw-binary Ed25519 signature, canonical manifest signature
+- GitHub Release assets: 각 native binary, raw detached `.sig`, 동일 manifest와 manifest `.sig`, public key PEM
+
+manifest signature는 domain-separated canonical payload 전체를 인증하므로 이전 binary/signature를 새 commit처럼 보이게 섞을 수 없다. package preparation과 런타임은 manifest의 package version이 독립적인 root `package.json` version과 같은지도 확인해 완전한 이전 bundle replay를 막는다. `scripts/prepare-package.ts`는 release에서 bundle 전체를 다시 검증하고 하나라도 없거나 다르면 publish 전에 실패한다. 런타임은 현재 OS/architecture artifact만 고정 public key로 검증한 직후 실행한다. bundle이 존재하지만 manifest, checksum, signature가 틀리면 unsigned development build로 fallback하지 않는다. 명시적인 absolute `OPENCODEX_REMOTE_AGENT_BIN`은 source checkout 개발용 override로만 남는다.
+
+실제 production private key는 `remote-agent-release` GitHub Environment secret에만 두고, 해당 environment 승인 뒤 실제 publish job에서만 읽는다. 기본 dry-run은 매번 임시 Ed25519 key를 생성해 동일한 조립·검증·packaging 경로를 시험하며 production key를 읽지 않는다. `expected-sha`는 모든 dispatch에서 필수이고 현재 `GITHUB_SHA`와 다르면 signing 전에 실패한다.
+
+[Decision Log]
+- 목적과 의도: 설치 직후 Remote를 사용할 수 있게 하면서 사용자 PC의 컴파일과 변조 binary 실행을 모두 제거한다.
+- 기존 구현 및 제약 조건: Rust Agent source와 local target fallback만 있었고 npm release에는 native artifact나 신뢰 기준이 없었다.
+- 검토한 주요 대안: 런타임 cargo build, checksum-only bundle, 플랫폼별 optional npm package, 한 npm package에 서명된 6종 동봉.
+- 선택한 방식: official native runner 6종 build, exact manifest, Ed25519 raw-binary signature, release-time bundle assembly를 사용한다.
+- 다른 대안 대신 이 방식을 선택한 이유: 기존 `npm install -g` UX와 단일 버전을 유지하면서 cross-compilation 차이와 캐시/패키지 변조를 fail-closed로 처리한다.
+- 장점, 단점 및 영향: Linux/macOS/Windows x64·arm64는 바로 실행되지만 release secret 보관과 6개 runner 성공이 새 release 필수 조건이다.
+
 ## User flow
 
 ```text

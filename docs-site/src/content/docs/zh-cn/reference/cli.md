@@ -336,8 +336,8 @@ ocx login xai
 ### `ocx remote <子命令>`
 
 这是仪表盘 **Remote** 页面的 headless 对应命令。`status` 读取受保护的本地状态，`link` 开始
-GitHub 设备批准，`activate --name <名称> --slug <slug>` 保留 hostname，`pairing-code` 创建
-10 分钟 Agent 配对码，`disconnect --yes` 撤销此电脑。独立 Remote 密码从 stdin 读取，避免
+GitHub 设备批准，`activate --name <名称> --slug <slug>` 保留 hostname 并启动随包签名 Agent，
+`pairing-code` 保留旧的 10 分钟配对路径，`disconnect --yes` 撤销此电脑。独立 Remote 密码从 stdin 读取，避免
 进入进程参数或 shell 历史。
 
 ```bash

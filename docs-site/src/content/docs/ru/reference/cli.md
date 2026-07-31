@@ -384,8 +384,8 @@ ocx login xai
 ### `ocx remote <подкоманда>`
 
 Headless-эквивалент страницы **Remote**: `status` читает защищённое локальное состояние, `link`
-запускает подтверждение GitHub, `activate --name <имя> --slug <slug>` резервирует hostname,
-`pairing-code` создаёт код Agent на 10 минут, а `disconnect --yes` отзывает этот ПК. Отдельный
+запускает подтверждение GitHub, `activate --name <имя> --slug <slug>` резервирует hostname и запускает
+встроенный подписанный Agent, `pairing-code` сохраняет прежний 10-минутный путь, а `disconnect --yes` отзывает этот ПК. Отдельный
 пароль передаётся через stdin, чтобы не попадать в аргументы процесса и историю shell.
 
 ```bash

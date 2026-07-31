@@ -14,6 +14,11 @@ import { chmod, open } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getConfigDir } from "../config";
+import {
+  REMOTE_AGENT_PUBLIC_KEY_PEM,
+  remoteAgentPackageForRuntime,
+  verifyRemoteAgentArtifact,
+} from "./agent-bundle";
 
 interface AgentPidFile {
   pid: number;
@@ -81,9 +86,14 @@ function executableName(): string {
   return process.platform === "win32" ? "opencodex-remote-agent.exe" : "opencodex-remote-agent";
 }
 
-function packagedPlatform(): string {
-  const platform = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
-  return `${platform}-${process.arch}`;
+function installedPackageVersion(packageRoot: string): string {
+  try {
+    const parsed = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as { version?: unknown };
+    if (typeof parsed.version !== "string" || parsed.version.length === 0) throw new Error("missing version");
+    return parsed.version;
+  } catch {
+    throw new Error("OpenCodex package version is unavailable for Remote Agent verification");
+  }
 }
 
 function resolveAgentBinary(): string | null {
@@ -94,8 +104,23 @@ function resolveAgentBinary(): string | null {
   }
   const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
   const name = executableName();
+  const bundleRoot = join(packageRoot, "bin", "remote-agent");
+  const packageName = remoteAgentPackageForRuntime();
+  if (existsSync(bundleRoot)) {
+    if (!packageName) throw new Error("Remote Agent is not available for this platform");
+    // A present release bundle is a trust boundary. Never fall back to an
+    // unsigned development binary when that bundle is partial or tampered.
+    const binary = verifyRemoteAgentArtifact(
+      bundleRoot,
+      packageName,
+      REMOTE_AGENT_PUBLIC_KEY_PEM,
+      installedPackageVersion(packageRoot),
+    );
+    if (process.platform !== "win32") accessSync(binary, constants.X_OK);
+    return binary;
+  }
+
   const candidates = [
-    join(packageRoot, "bin", "remote-agent", packagedPlatform(), name),
     join(packageRoot, "remote-agent", "target", "release", name),
     join(packageRoot, "remote-agent", "target", "debug", name),
   ];

@@ -785,7 +785,7 @@ mod tests {
         assert_eq!(decoded.kind, FrameKind::Data);
         assert_eq!(decoded.session_id, session_id);
         assert_eq!(decoded.payload, b"opaque");
-        assert!(RelayFrame::decode(&vec![0; FRAME_HEADER_SIZE - 1]).is_err());
+        assert!(RelayFrame::decode(&[0; FRAME_HEADER_SIZE - 1]).is_err());
         assert!(
             RelayFrame {
                 kind: FrameKind::Data,

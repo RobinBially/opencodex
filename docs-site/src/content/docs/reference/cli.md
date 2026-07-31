@@ -453,8 +453,8 @@ Remove the stored OAuth credential for a provider.
 ### `ocx remote <subcommand>`
 
 Headless parity for the dashboard **Remote** page. `status` reads protected local state, `link` starts
-GitHub device approval, `activate --name <name> --slug <slug>` reserves the hostname,
-`pairing-code` creates a ten-minute Agent code, and `disconnect --yes` revokes this PC. Set the
+GitHub device approval, `activate --name <name> --slug <slug>` reserves the hostname and starts the
+signed packaged Agent, `pairing-code` keeps the legacy ten-minute pairing path, and `disconnect --yes` revokes this PC. Set the
 separate password through stdin so it never appears in process arguments or shell history:
 
 ```bash

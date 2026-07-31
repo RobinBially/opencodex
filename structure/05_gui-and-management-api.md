@@ -111,7 +111,9 @@ GitHub approval, the central service returns a revocable OpenCodex device token 
 channel and deletes the encrypted handoff after the local ACK. GitHub OAuth access, refresh, and ID
 tokens are discarded by the central auth database hooks and never enter `remote.json`.
 
-The separate Remote password is Argon2id-hashed by the central service. Changing it revokes existing
+The separate Remote password is derived with Argon2id locally. The central service stores only a
+hash of the HKDF-separated authentication secret and cannot unwrap the encrypted account vault.
+Changing the password requires the old password, rewraps the vault locally, and revokes existing
 instance browser sessions. Five failed attempts lock verification for 15 minutes. An unauthenticated
 top-level request to an active instance hostname redirects to `/access/<slug>` on the central origin;
 API and WebSocket requests still fail closed without redirection. Successful GitHub ownership and
@@ -124,7 +126,7 @@ password verification creates a 60-second exchange code and then a host-only ins
 - 검토한 주요 대안: localhost OAuth callback으로 GitHub token 전달, 장기 token을 URL fragment에 포함, polling secret이 분리된 device authorization과 중앙 password gate.
 - 선택한 방식: local device authorization, 중앙 GitHub identity-only OAuth, Argon2id password, hostname별 exchange session을 결합한다.
 - 다른 대안 대신 이 방식을 선택한 이유: GitHub/Cloudflare credential이 사용자 브라우저 history나 PC로 이동하지 않으며 각 PC와 instance session을 따로 폐기할 수 있다.
-- 장점, 단점 및 영향: Tailscale과 유사한 local-first UX와 중앙 정책 경계가 생긴다. 다만 privileged signed Agent installer가 배포되기 전에는 Linux helper pairing이 수동 private-MVP 단계로 남는다.
+- 장점, 단점 및 영향: Tailscale과 유사한 local-first UX와 중앙 정책 경계가 생긴다. Linux/macOS/Windows x64·arm64는 npm에 동봉된 서명 Agent로 연결되며 다른 조합은 명확히 미지원 처리한다.
 ```
 
 ## Sidebar stop button

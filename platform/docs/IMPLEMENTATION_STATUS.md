@@ -1,10 +1,10 @@
 # OpenCodex Remote MVP 구현 인수인계
 
-마지막 갱신: 2026-07-30
+마지막 갱신: 2026-07-31
 
-작업 브랜치: `ingw/remote-private-mvp-handoff`
+작업 브랜치: `ingw/remote-outbound-e2ee`
 
-기준 브랜치/커밋: `dev` / `67c731e6`
+기준 브랜치/커밋: `dev` / `cd46a34d`
 
 이 문서는 다른 컴퓨터에서 작업을 바로 이어가기 위한 현재 상태의 기준 문서다. PostgreSQL 17과 실제 Control Plane·worker·Gateway 프로세스를 사용하는 로컬 통합 검증을 완료했고, 2026-07-30 기존 TeamWicked Oracle VPS에 중앙 bootstrap runtime과 `opencodexpages.me` public ingress를 배포했다. 실제 Cloudflare account의 Linux Mesh/private-hostname transport와 Rust Agent 포함 30분 stream은 통과했지만 실제 OpenCodex process를 포함한 public 운영 E2E는 아직 완료되지 않았다.
 
@@ -21,7 +21,7 @@
 - 기존 Mesh instance는 새 E2EE password를 설정할 때 slug를 보존해 `outbound-relay`로 전환한다. 기존 Cloudflare resource cleanup은 자동으로 수행하지 않는다.
 - 로컬 GUI는 연결 컴퓨터, Relay 상태, 이전 비밀번호가 필요한 암호화 password 변경, 사전 빌드 Agent 시작을 표시한다.
 
-현재 검증: root/platform typecheck, GUI/platform production build와 lint, Rust check/build와 6 unit tests, root 전체 `6035 pass / 2 skip / 0 fail`을 통과했다. PostgreSQL 17에 `0003`까지 적용한 통합 테스트는 실제 Gateway, Rust Agent, WebCrypto client, `/bin/sh` portable PTY를 연결해 암호화한 `OCXR_RELAY_OK` 왕복과 누락된 immutable asset의 404 경계까지 `1 test / 87 expects`로 3회 연속 통과했다. 로컬 GUI와 wildcard workspace는 Playwright viewport에서 수평 overflow 없이 확인했다. 아직 남은 release 차단 조건은 signed multi-platform Agent packaging, 실제 Codex/Claude CLI를 포함한 public 운영 E2E, 운영 backup/deploy/rollback이다. 이 코드는 운영 중앙 서버와 `dev`에 배포하지 않았다.
+현재 검증: root/platform typecheck, GUI/platform production build와 lint, Rust check/build와 6 unit tests, root 전체 `6035 pass / 2 skip / 0 fail`을 통과했다. PostgreSQL 17에 `0003`까지 적용한 통합 테스트는 실제 Gateway, Rust Agent, WebCrypto client, `/bin/sh` portable PTY를 연결해 암호화한 `OCXR_RELAY_OK` 왕복과 누락된 immutable asset의 404 경계까지 `1 test / 87 expects`로 3회 연속 통과했다. 로컬 GUI와 wildcard workspace는 Playwright viewport에서 수평 overflow 없이 확인했다. signed multi-platform Agent packaging과 런타임 fail-closed 검증 코드는 구현했으며 정확한 PR commit의 Actions 6종 통과가 필요하다. 아직 남은 release 차단 조건은 실제 Codex/Claude CLI를 포함한 public 운영 E2E와 운영 backup/deploy/rollback이다. 이 코드는 운영 중앙 서버와 `dev`에 배포하지 않았다.
 
 ## 문서와 디자인 자산
 
@@ -165,7 +165,7 @@
 - 실제 Codex/Claude CLI 프로세스를 포함한 outbound E2EE terminal E2E. `/bin/sh` PTY 암호화 왕복은 완료했다.
 - outbound Gateway 프로세스 재시작 시 Agent/browser 재접속 측정. 기존 Mesh transport/Rust Agent 30분과 Tunnel 재시작은 완료.
 - suspend/delete saga의 Cloudflare 부분 실패 재시도와 orphan reconciliation.
-- Agent 설치·OpenCodex 설정 반영을 한 번에 수행하는 서명 검증 installer.
+- 최초 서명 bundle이 실 npm dry-run/package와 각 OS에서 설치·시작되는지 확인.
 - UI의 keyboard/focus/reduced-motion/zoom 접근성 브라우저 QA. 기본 viewport 시각 QA와 overflow 검사는 완료했다.
 
 ## 남은 부분
@@ -182,8 +182,8 @@
 ### P1 — 운영 기능
 
 - [x] native/isolated hybrid systemd unit 여섯 개와 중앙 `cloudflared`, Linux Mesh node 배포.
-- Agent `amd64`/`arm64` musl release workflow.
-- Agent binary와 installer의 SHA-256 + Ed25519 detached signature 검증.
+- [x] Linux/macOS/Windows x64·arm64 native Agent CI/release matrix와 pinned Rust toolchain.
+- [x] Agent binary SHA-256 + Ed25519 detached signature, package version·source commit을 묶는 canonical manifest signature, npm prepare/runtime fail-closed 검증.
 - suspend 시 hostname/CIDR/DNS를 먼저 제거하고 Cloudflare connector-cleanup API로 모든 연결을 끊은 뒤 Tunnel을 삭제하는 흐름을 실제 활성 Agent에서 확인했다.
 - resume 흐름 추가. 현재 suspend worker는 연결 종료를 확실히 하기 위해 Tunnel과 token을 폐기하며 resume은 미구현이다.
 - delete saga 단계별 idempotency와 orphan resource reconciler 추가.
@@ -198,9 +198,9 @@
 - 승인 이미지와 같은 1488×1058 viewport에서 Instances/Onboarding 시각 비교.
 - keyboard, focus, reduced motion, zoom, tablet/mobile QA.
 - UI에서 실시간 health signal 세부값과 retry 상태 연결.
-- 온보딩 설치 명령을 실제 서명 검증 installer URL로 교체. 현재 `install.ocx.run`은 디자인용 placeholder다.
+- [x] 로컬 `ocx gui`가 별도 privileged installer 대신 npm에 동봉된 서명 Agent를 현재 사용자 권한으로 시작.
 - 사용자/인스턴스 관리자 정지 화면과 Audit Log/Activity 실제 API 연결.
-- CI에 platform typecheck/test/build, Rust fmt/clippy/test와 musl build 추가.
+- [x] CI에 Rust fmt/clippy/test와 Linux musl, macOS, Windows x64·arm64 native build 추가. platform 전체 CI 확대는 별도 운영 시간 판단이 필요하다.
 - Cloudflare 다중 사용자 서비스 허용 범위 서면 확인.
 
 ## 알려진 차이와 위험
@@ -263,7 +263,7 @@ PASS  cd docs-site && bun run build
 
 ```bash
 git fetch origin
-git switch ingw/remote-private-mvp-handoff
+git switch ingw/remote-outbound-e2ee
 
 bun install --frozen-lockfile
 bun run typecheck
