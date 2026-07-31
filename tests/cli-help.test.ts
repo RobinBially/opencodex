@@ -35,7 +35,7 @@ describe("CLI subcommand help", () => {
     expect(binResult.status).toBe(0);
     expect(binResult.stdout.trim()).toMatch(/^opencodex \d+\.\d+\.\d+/);
     expect(binResult.stdout.trim().split("\n")).toHaveLength(1);
-  });
+  }, { timeout: 20_000 });
 
   test("help command routes to subcommand help", () => {
     const result = runCli(["help", "start"]);
@@ -243,7 +243,7 @@ describe("CLI subcommand help", () => {
 
   test("invalid service and codex-shim usage include remove alias", () => {
     const cases = [
-      { args: ["service", "nope"], expected: "Usage: ocx service [install|start|stop|status|uninstall|remove]" },
+      { args: ["service", "nope"], expected: "Usage: ocx service [install|repair|start|stop|status|uninstall|remove]" },
       { args: ["codex-shim", "nope"], expected: "Usage: ocx codex-shim <install|status|uninstall|remove>" },
     ];
 

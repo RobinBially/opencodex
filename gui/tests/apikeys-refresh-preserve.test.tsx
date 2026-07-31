@@ -3,6 +3,7 @@ import { Window } from "happy-dom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import { LanguageProvider } from "../src/i18n/provider";
+import { clearClientResourceStoresForTests } from "../src/client-resource";
 import ApiKeys from "../src/pages/ApiKeys";
 
 const originalFetch = globalThis.fetch;
@@ -10,6 +11,7 @@ let restoreGlobals: (() => void) | undefined;
 let previousLanguageDescriptor: PropertyDescriptor | undefined;
 
 beforeEach(() => {
+  clearClientResourceStoresForTests();
   previousLanguageDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, "language");
   Object.defineProperty(globalThis.navigator, "language", { configurable: true, value: "en-US" });
   const previous = {
@@ -38,6 +40,7 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  clearClientResourceStoresForTests();
   restoreGlobals?.();
 });
 
@@ -180,16 +183,25 @@ test("successful key delete keeps last-good keys visible when follow-up refresh 
 
     expect(container.textContent).toContain("existing-key");
 
+    const keyRow = [...container.querySelectorAll<HTMLButtonElement>(".apikeys-workspace-rail-row")]
+      .find((button) => button.textContent?.includes("existing-key"));
+    expect(keyRow).toBeTruthy();
+    await act(async () => {
+      keyRow!.click();
+      await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 0));
+    });
+
     const deleteBtn = container.querySelector<HTMLButtonElement>('button[aria-label="Delete API key"]');
     expect(deleteBtn).toBeTruthy();
     await act(async () => {
       deleteBtn!.click();
-      await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 0));
+      await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 310));
     });
 
     const confirmBtn = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) => button.textContent === "Confirm");
+      .find((button) => button.textContent?.includes("Confirm"));
     expect(confirmBtn).toBeTruthy();
+    expect(confirmBtn!.disabled).toBe(false);
 
     await act(async () => {
       confirmBtn!.click();

@@ -62,13 +62,16 @@ export default function Claude({ apiBase }: { apiBase: string }) {
         </button>
       </div>
 
+      {/* Both stay mounted so draft/UI state survives tab switches; Desktop pauses polls while hidden. */}
       <div
         id="claude-code-panel"
         role="tabpanel"
         aria-labelledby="claude-code-tab"
         hidden={tab !== "code"}
       >
-        {tab === "code" && <ClaudeCode apiBase={apiBase} />}
+        {/* Mounted while hidden so drafts survive a tab switch, but `active` keeps it from
+            fetching for a panel nobody is looking at — mirroring Desktop below. */}
+        <ClaudeCode key={apiBase} apiBase={apiBase} active={tab === "code"} />
       </div>
       <div
         id="claude-desktop-panel"
@@ -76,7 +79,7 @@ export default function Claude({ apiBase }: { apiBase: string }) {
         aria-labelledby="claude-desktop-tab"
         hidden={tab !== "desktop"}
       >
-        {tab === "desktop" && <ClaudeDesktop apiBase={apiBase} />}
+        <ClaudeDesktop key={apiBase} apiBase={apiBase} active={tab === "desktop"} />
       </div>
     </section>
   );

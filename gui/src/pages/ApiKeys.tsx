@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Notice } from "../ui";
 import { useI18n, LOCALES } from "../i18n/shared";
 import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
@@ -7,6 +7,10 @@ import {
   externalModelId,
   type ExternalModelRow,
 } from "../api-access-models";
+import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
+import { useDataSurface } from "../data-surface";
+import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
+import ApiKeysWorkspace from "../components/apikeys-workspace/ApiKeysWorkspace";
 import {
   DEFAULT_ENDPOINTS,
   deriveApiEndpoints,
@@ -14,13 +18,6 @@ import {
   type ApiKeyEntry,
   type ModelTestState,
 } from "./api-keys-utils";
-import {
-  ApiKeysAuthPanel,
-  ApiKeysEndpointsPanel,
-  ApiKeysManagePanel,
-  ApiKeysModelsPanel,
-  ApiKeysUsagePanel,
-} from "./api-keys-panels";
 
 interface KeysResponse {
   keys?: ApiKeyEntry[];
@@ -37,17 +34,35 @@ interface CreateKeyResponse {
   key?: unknown;
 }
 
+type CachedKeysShape = {
+  keys: ApiKeyEntry[];
+  endpoints: ApiEndpointInfo;
+  claudeCodeEnabled: boolean;
+};
+
+const EMPTY_MODELS: ExternalModelRow[] = [];
+
+/** Seed copyable endpoints only when apiBase has a usable origin/host. */
+function seedEndpointsFromApiBase(apiBase: string): ApiEndpointInfo {
+  const trimmed = apiBase.replace(/\/$/, "");
+  if (!trimmed) return DEFAULT_ENDPOINTS;
+  try {
+    const url = new URL(trimmed);
+    if (!url.host) return DEFAULT_ENDPOINTS;
+    return deriveApiEndpoints(`${trimmed}/v1/responses`);
+  } catch {
+    return DEFAULT_ENDPOINTS;
+  }
+}
+
 export default function ApiKeys({ apiBase }: { apiBase: string }) {
   const { t, locale } = useI18n();
   const localeTag = LOCALES.find(l => l.code === locale)?.htmlLang;
-  const [keys, setKeys] = useState<ApiKeyEntry[]>([]);
-  const [endpoints, setEndpoints] = useState<ApiEndpointInfo>(DEFAULT_ENDPOINTS);
-  const [claudeCodeEnabled, setClaudeCodeEnabled] = useState(true);
-  const [keysLoadFailed, setKeysLoadFailed] = useState(false);
+  const keysCacheKey = `ocx.apikeys.list.v1:${apiBase}`;
+  const modelsCacheKey = `ocx.apikeys.models.v1:${apiBase}`;
+  const cachedKeys = readSessionListCache<CachedKeysShape>(keysCacheKey);
+  const cachedModels = readSessionListCache<ExternalModelRow[]>(modelsCacheKey);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [models, setModels] = useState<ExternalModelRow[]>([]);
-  const [modelsLoading, setModelsLoading] = useState(false);
-  const [modelsLoadFailed, setModelsLoadFailed] = useState(false);
   const [modelQuery, setModelQuery] = useState("");
   const [copiedModelId, setCopiedModelId] = useState<string | null>(null);
   const [modelTests, setModelTests] = useState<Record<string, { state: ModelTestState; detail?: string }>>({});
@@ -55,79 +70,73 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
   const [creating, setCreating] = useState(false);
   const [newKey, setNewKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const creatingRef = useRef(false);
 
-  const fetchKeys = useCallback(async () => {
-    try {
-      const res = await fetch(`${apiBase}/api/keys`);
-      const data = await readJsonIfOk<KeysResponse>(res);
-      if (!data) {
-        // Keep last-good keys/endpoints/Claude setting; only mark the refresh failed.
-        setKeysLoadFailed(true);
-        return;
-      }
-      const derived = deriveApiEndpoints(data.endpoint ?? "");
-      setKeys(data.keys ?? []);
-      setEndpoints({
+  const fetchKeys = useCallback(async (signal: AbortSignal): Promise<CachedKeysShape> => {
+    const res = await fetch(`${apiBase}/api/keys`, { signal });
+    const data = await readJsonIfOk<KeysResponse>(res);
+    if (!data) throw new Error(t("api.keysLoadFailed"));
+    const derived = deriveApiEndpoints(data.endpoint ?? "");
+    const next: CachedKeysShape = {
+      keys: data.keys ?? [],
+      endpoints: {
         baseUrl: data.baseUrl ?? derived.baseUrl,
         responses: data.responsesEndpoint ?? data.endpoint ?? DEFAULT_ENDPOINTS.responses,
         chatCompletions: data.chatCompletionsEndpoint ?? derived.chatCompletions,
         messages: data.messagesEndpoint ?? derived.messages,
         models: data.modelsEndpoint ?? derived.models,
-      });
-      setClaudeCodeEnabled(data.claudeCodeEnabled !== false);
-      setKeysLoadFailed(false);
-    } catch {
-      setKeysLoadFailed(true);
-    }
-  }, [apiBase]);
+      },
+      claudeCodeEnabled: data.claudeCodeEnabled !== false,
+    };
+    // Prefixes only — never the secret key material.
+    writeSessionListCache(keysCacheKey, next);
+    return next;
+  }, [apiBase, keysCacheKey, t]);
 
-  const fetchModels = useCallback(async () => {
-    setModelsLoading(true);
-    setModelsLoadFailed(false);
-    try {
-      const res = await fetch(`${apiBase}/v1/models`);
-      if (!res.ok) {
-        setModels([]);
-        setModelsLoadFailed(true);
-        return;
-      }
-      const data = await res.json() as unknown;
-      const rawRows = Array.isArray(data)
-        ? data
-        : (typeof data === "object" && data !== null && Array.isArray((data as { data?: unknown }).data)
-          ? (data as { data: unknown[] }).data
-          : null);
-      if (!rawRows) {
-        setModels([]);
-        setModelsLoadFailed(true);
-        return;
-      }
-      const rows = rawRows
-        .filter((row): row is { id: string; owned_by?: string } => (
-          typeof row === "object"
-          && row !== null
-          && typeof (row as { id?: unknown }).id === "string"
-        ))
-        .map(row => classifyExternalModel(row))
-        .sort((a, b) => externalModelId(a).localeCompare(externalModelId(b)));
-      setModels(rows);
-    } catch {
-      setModels([]);
-      setModelsLoadFailed(true);
-    } finally {
-      setModelsLoading(false);
-    }
-  }, [apiBase]);
+  const fetchModels = useCallback(async (signal: AbortSignal): Promise<ExternalModelRow[]> => {
+    const res = await fetch(`${apiBase}/v1/models`, { signal });
+    if (!res.ok) throw new Error(t("api.modelsLoadFailed"));
+    const data = await res.json() as unknown;
+    const rawRows = Array.isArray(data)
+      ? data
+      : (typeof data === "object" && data !== null && Array.isArray((data as { data?: unknown }).data)
+        ? (data as { data: unknown[] }).data
+        : null);
+    if (!rawRows) throw new Error(t("api.modelsLoadFailed"));
+    const rows = rawRows
+      .filter((row): row is { id: string; owned_by?: string } => (
+        typeof row === "object"
+        && row !== null
+        && typeof (row as { id?: unknown }).id === "string"
+      ))
+      .map(row => classifyExternalModel(row))
+      .sort((a, b) => externalModelId(a).localeCompare(externalModelId(b)));
+    writeSessionListCache(modelsCacheKey, rows);
+    return rows;
+  }, [apiBase, modelsCacheKey, t]);
 
-  useEffect(() => {
-    const timeout = window.setTimeout(() => {
-      void fetchKeys();
-      void fetchModels();
-    }, 0);
-    return () => window.clearTimeout(timeout);
-  }, [fetchKeys, fetchModels]);
+  // Keys and models intentionally remain independent resources: a slow catalog must never
+  // block endpoint/key management, and each cache key retains its own session seed.
+  const keysResource = useDataSurface<CachedKeysShape>(
+    `api-keys:${apiBase}`,
+    [apiBase],
+    fetchKeys,
+    { isEmpty: data => data.keys.length === 0 },
+  );
+  const modelsResource = useDataSurface<ExternalModelRow[]>(
+    `api-models:${apiBase}`,
+    [apiBase],
+    fetchModels,
+    { isEmpty: models => models.length === 0 },
+  );
+  const keysState = keysResource.state;
+  const modelsState = modelsResource.state;
+  const keysData = keysState.data ?? cachedKeys;
+  const models = modelsState.data ?? cachedModels ?? EMPTY_MODELS;
+  const keys = keysData?.keys ?? [];
+  const endpoints = keysData?.endpoints ?? seedEndpointsFromApiBase(apiBase);
+  const claudeCodeEnabled = keysData?.claudeCodeEnabled ?? true;
+  const refreshKeys = keysResource.refresh;
 
   const filteredModels = useMemo(() => {
     const query = modelQuery.trim().toLowerCase();
@@ -159,7 +168,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
       }
       setNewKey(data.key);
       setNewName("");
-      void fetchKeys();
+      refreshKeys();
       return true;
     } catch {
       setActionError(t("api.createFailed"));
@@ -182,8 +191,7 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
         setActionError(t("api.deleteFailed"));
         return;
       }
-      setConfirmDelete(null);
-      void fetchKeys();
+      refreshKeys();
     } catch {
       setActionError(t("api.deleteFailed"));
     }
@@ -267,44 +275,60 @@ export default function ApiKeys({ apiBase }: { apiBase: string }) {
         {subtitleParts[2]}
       </p>
 
-      {(keysLoadFailed || actionError) && (
-        <Notice tone="err">{actionError ?? t("api.keysLoadFailed")}</Notice>
-      )}
+      {actionError && <Notice tone="err">{actionError}</Notice>}
+      {keysState.showError && keysData && <Notice tone="err">{t("api.keysLoadFailed")}</Notice>}
+      {modelsState.showError && keysData && <Notice tone="err">{t("api.modelsLoadFailed")}</Notice>}
 
-      <ApiKeysEndpointsPanel endpoints={endpoints} claudeCodeEnabled={claudeCodeEnabled} />
-      <ApiKeysAuthPanel claudeCodeEnabled={claudeCodeEnabled} />
-      <ApiKeysManagePanel
+      {keysState.showSkeleton && !keysData ? (
+        <DataSurfaceSkeleton label={t("api.activeKeysLoading")} rows={4} />
+      ) : keysState.kind === "failed-cold" && !keysData ? (
+        <>
+          <Notice tone="err">{keysState.error instanceof Error ? keysState.error.message : t("api.keysLoadFailed")}</Notice>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => refreshKeys()}>{t("common.retry")}</button>
+        </>
+      ) : (
+        <>
+          {/* Keys and models revalidate independently and can be in flight together. Only one
+              region may announce per transition, so keys take precedence and models steps down to
+              visual-only while keys is speaking. */}
+          {keysState.refreshing && keysData && (
+            <DataSurfaceStatus live={!keysState.showError}>{t("api.activeKeysLoading")}</DataSurfaceStatus>
+          )}
+          {modelsState.refreshing && modelsState.data && (
+            <DataSurfaceStatus live={!modelsState.showError && !(keysState.refreshing && keysData)}>
+              {t("api.modelsLoading")}
+            </DataSurfaceStatus>
+          )}
+          <ApiKeysWorkspace
         keys={keys}
-        keysLoadFailed={keysLoadFailed}
+        keysLoading={false}
+        keysLoadFailed={keysState.showError}
+        endpoints={endpoints}
+        claudeCodeEnabled={claudeCodeEnabled}
+        localeTag={localeTag}
         newName={newName}
         creating={creating}
         newKey={newKey}
         copied={copied}
-        confirmDelete={confirmDelete}
-        localeTag={localeTag}
+        filteredModels={filteredModels}
+        modelsLoading={modelsState.showSkeleton && !modelsState.data && !cachedModels}
+        modelsLoadFailed={modelsState.showError}
+        modelQuery={modelQuery}
+        copiedModelId={copiedModelId}
+        modelTests={modelTests}
         onNewNameChange={setNewName}
         onCreate={() => { void handleCreate(); }}
         onDismissNewKey={() => setNewKey(null)}
         onCopyKey={copyKey}
-        onConfirmDelete={setConfirmDelete}
-        onCancelDelete={() => setConfirmDelete(null)}
         onDelete={(id) => { void handleDelete(id); }}
-      />
-      <ApiKeysModelsPanel
-        filteredModels={filteredModels}
-        modelsLoading={modelsLoading}
-        modelsLoadFailed={modelsLoadFailed}
-        modelQuery={modelQuery}
-        copiedModelId={copiedModelId}
-        modelTests={modelTests}
-        claudeCodeEnabled={claudeCodeEnabled}
         onModelQueryChange={setModelQuery}
         onCopyModelId={(modelId) => { void copyModelId(modelId); }}
         onTestModel={(model) => { void testModel(model); }}
         sourceLabel={sourceLabel}
         protocolLabel={protocolLabel}
-      />
-      <ApiKeysUsagePanel endpoints={endpoints} claudeCodeEnabled={claudeCodeEnabled} />
+          />
+        </>
+      )}
     </section>
   );
 }

@@ -16,6 +16,9 @@ test("the controller is the single data owner and exposes the agreed contract", 
   for (const member of [
     "accounts", "activeId", "loadState", "switchingId", "pauseUpdatingId", "pausingExhausted", "activeNeedsReauth",
     "load", "switchAccount", "setAccountPaused", "pauseExhaustedAccounts", "saveAlias", "removeAccount", "syncAfterAccountAdded",
+    // WP2 (260730_gui_hydration_loading_unify/010): progress is part of the contract, because a
+    // forced quota refresh keeps `loadState` at "ready" and would otherwise be invisible.
+    "refreshing", "initialLoading",
   ]) {
     expect(hook).toContain(member);
   }
@@ -39,8 +42,10 @@ test("main and added account cards expose the same persisted pause control", asy
   expect(pool).toContain("controller.setAccountPaused(account.id, paused)");
   expect(mainCard).toContain("onTogglePause(mainSwitchEntry)");
   expect(addedCards).toContain("onTogglePause(a)");
-  expect(mainCard).toContain('t(main.paused ? "codexAuth.resume" : "codexAuth.pause")');
-  expect(addedCards).toContain('t(a.paused ? "codexAuth.resume" : "codexAuth.pause")');
+  expect(mainCard).toContain("<CodexPauseToggleLabel");
+  expect(addedCards).toContain("<CodexPauseToggleLabel");
+  expect(mainCard).toContain('saving={pauseUpdatingId === "__main__"}');
+  expect(addedCards).toContain("saving={pauseUpdatingId === a.id}");
 });
 
 test("the pool header exposes one bulk action backed by the atomic endpoint", async () => {

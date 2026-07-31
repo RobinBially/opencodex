@@ -155,9 +155,9 @@ describe("AccountPoolStrategyControls", () => {
         />
       </LanguageProvider>,
     );
+    // Custom Select only paints the active label until opened (sidecar DNA).
     expect(quota).toContain("Quota");
-    expect(quota).toContain("Round-robin");
-    expect(quota).toContain("Fill-first");
+    expect(quota).toContain("select-trigger");
     expect(quota).toContain("Applies to new sessions only");
     expect(quota).not.toContain("Sticky successes before rotate");
 
@@ -172,11 +172,12 @@ describe("AccountPoolStrategyControls", () => {
         />
       </LanguageProvider>,
     );
+    expect(rr).toContain("Round-robin");
     expect(rr).toContain("Sticky successes before rotate");
     expect(rr).toContain('value="2"');
   });
 
-  test("keeps the visual field label by default (Anthropic card has its own title)", () => {
+  test("renders a canonical setting row: visible name, control beside it, no sr-only label", () => {
     const markup = renderToStaticMarkup(
       <LanguageProvider>
         <AccountPoolStrategyControls
@@ -188,27 +189,61 @@ describe("AccountPoolStrategyControls", () => {
         />
       </LanguageProvider>,
     );
-    expect(markup).toContain('class="field-label"');
+    expect(markup).toContain('class="setting-row"');
+    expect(markup).toContain('class="setting-label"');
+    expect(markup).toContain('class="setting-controls"');
+    // The name is visible copy now, not a hidden label above an unnamed picker.
     expect(markup).not.toContain('class="sr-only"');
+    expect(markup).toContain("Rotation strategy");
+    // And the select keeps its accessible name.
+    expect(markup).toContain('aria-label="Rotation strategy"');
   });
 
-  test("strategyLabelHidden drops the duplicate visual label but keeps the accessible name", () => {
+  // The regression this guards: the two strings answer different questions — what the setting
+  // does, and what happens to threads that are already running. Collapsing them to one line
+  // silently drops the account-affinity answer, which is what the plan originally proposed.
+  test("keeps both the strategy description and the session-affinity notice", () => {
     const markup = renderToStaticMarkup(
       <LanguageProvider>
         <AccountPoolStrategyControls
           strategy="quota"
           stickyDraft="1"
-          strategyLabelHidden
           onStrategyChange={() => {}}
           onStickyDraftChange={() => {}}
           onStickyCommit={() => {}}
         />
       </LanguageProvider>,
     );
-    expect(markup).not.toContain('class="field-label"');
-    expect(markup).toContain('class="sr-only"');
-    // The select must still expose an accessible name.
-    expect(markup).toContain('aria-label="Rotation strategy"');
+    expect(markup).toContain("How new sessions pick an account from the pool.");
+    expect(markup).toContain("Applies to new sessions only");
+    expect((markup.match(/class="desc"/g) ?? []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  /*
+   * Both callers share this component, so a content loss in one of them is a content loss in
+   * the other. The Anthropic pool card had no test mounting it at all, which is how the two
+   * screens drifted apart in the first place.
+   */
+  test("both descriptions survive for the Anthropic caller's id set too", () => {
+    const markup = renderToStaticMarkup(
+      <LanguageProvider>
+        <AccountPoolStrategyControls
+          strategy="round-robin"
+          stickyDraft="3"
+          strategySelectId="anthropic-pool-strategy"
+          stickyInputId="anthropic-pool-sticky-limit"
+          onStrategyChange={() => {}}
+          onStickyDraftChange={() => {}}
+          onStickyCommit={() => {}}
+        />
+      </LanguageProvider>,
+    );
+    expect(markup).toContain("How new sessions pick an account from the pool.");
+    expect(markup).toContain("Applies to new sessions only");
+    expect(markup).toContain('id="anthropic-pool-strategy"');
+    // Round-robin adds its own row, and the sticky help text is a desc rather than a card-sub.
+    expect(markup).toContain("Sticky successes before rotate");
+    expect((markup.match(/class="setting-row"/g) ?? []).length).toBe(2);
   });
 });
 
@@ -216,6 +251,74 @@ describe("CodexPoolStrategySetting optimistic strategy select", () => {
   beforeEach(() => setupDom());
   afterEach(async () => {
     await teardownDom();
+  });
+
+  function strategyTrigger(host: ParentNode): HTMLButtonElement {
+    const el = host.querySelector<HTMLButtonElement>("#codex-pool-strategy");
+    if (!el) throw new Error("strategy select missing");
+    return el;
+  }
+
+  async function pickStrategy(host: ParentNode, label: string): Promise<void> {
+    await act(async () => {
+      strategyTrigger(host).click();
+      await flush();
+    });
+    const option = Array.from(testWindow.document.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+      .find((el) => (el.textContent ?? "").includes(label));
+    if (!option) throw new Error(`strategy option missing: ${label}`);
+    await act(async () => {
+      option.click();
+      await flush();
+    });
+  }
+
+  test("keeps strategy controls disabled until /active hydrates", async () => {
+    const active = deferred<Response>();
+    const puts: unknown[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/codex-auth/active") && (!init || init.method === undefined)) {
+        return active.promise;
+      }
+      if (url.endsWith("/api/codex-auth/pool-strategy") && init?.method === "PUT") {
+        puts.push(init.body ? JSON.parse(String(init.body)) : null);
+        return new Response(JSON.stringify({
+          ok: true,
+          accountPoolStrategy: "round-robin",
+          accountPoolStickyLimit: 1,
+        }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch: ${url} ${init?.method ?? "GET"}`);
+    }) as typeof fetch;
+
+    const host = testWindow.document.createElement("div");
+    testWindow.document.body.appendChild(host as never);
+    const { createRoot } = await import("react-dom/client");
+    await act(async () => {
+      mountedRoot = createRoot(host);
+      mountedRoot.render(
+        <LanguageProvider>
+          <CodexPoolStrategySetting apiBase="http://proxy" />
+        </LanguageProvider>,
+      );
+    });
+    await act(async () => { await flush(); });
+
+    expect(strategyTrigger(host).disabled).toBe(true);
+    expect(puts).toEqual([]);
+
+    await act(async () => {
+      active.resolve(new Response(JSON.stringify({
+        accountPoolStrategy: "fill-first",
+        accountPoolStickyLimit: 3,
+      }), { status: 200 }));
+      await flush();
+    });
+
+    expect(strategyTrigger(host).disabled).toBe(false);
+    expect(strategyTrigger(host).textContent).toContain("Fill-first");
+    expect(puts).toEqual([]);
   });
 
   test("updates visible strategy before save completes", async () => {
@@ -247,20 +350,12 @@ describe("CodexPoolStrategySetting optimistic strategy select", () => {
     });
     await act(async () => { await flush(); });
 
-    const select = () => host.querySelector<HTMLSelectElement>("#codex-pool-strategy");
-    expect(select()?.value).toBe("quota");
+    expect(strategyTrigger(host).textContent).toContain("Quota");
 
-    await act(async () => {
-      const el = select();
-      if (!el) throw new Error("strategy select missing");
-      Object.getOwnPropertyDescriptor(testWindow.HTMLSelectElement.prototype, "value")!
-        .set!.call(el, "round-robin");
-      el.dispatchEvent(new testWindow.Event("change", { bubbles: true }));
-      await flush();
-    });
+    await pickStrategy(host, "Round-robin");
 
-    expect(select()?.value).toBe("round-robin");
-    expect(select()?.disabled).toBe(true);
+    expect(strategyTrigger(host).textContent).toContain("Round-robin");
+    expect(strategyTrigger(host).disabled).toBe(true);
 
     await act(async () => {
       put.resolve(new Response(JSON.stringify({
@@ -271,8 +366,8 @@ describe("CodexPoolStrategySetting optimistic strategy select", () => {
       await flush();
     });
 
-    expect(select()?.value).toBe("round-robin");
-    expect(select()?.disabled).toBe(false);
+    expect(strategyTrigger(host).textContent).toContain("Round-robin");
+    expect(strategyTrigger(host).disabled).toBe(false);
     expect(host.textContent).toContain("Sticky successes before rotate");
   });
 
@@ -304,18 +399,81 @@ describe("CodexPoolStrategySetting optimistic strategy select", () => {
     });
     await act(async () => { await flush(); });
 
-    const select = () => host.querySelector<HTMLSelectElement>("#codex-pool-strategy");
+    await pickStrategy(host, "Fill-first");
+
+    expect(strategyTrigger(host).textContent).toContain("Quota");
+    expect(host.textContent).toContain("Rotation strategy could not be saved");
+  });
+
+  test("ignores stale shared /active reads that started before a successful save", async () => {
+    type Observer = {
+      beginActiveRead(): number;
+      acceptActiveRead(value: unknown, startedRevision: number): void;
+      rejectActiveRead(): void;
+    };
+    let observer: Observer | null = null;
+    const put = deferred<Response>();
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/codex-auth/pool-strategy") && init?.method === "PUT") {
+        return put.promise;
+      }
+      throw new Error(`unexpected fetch: ${url} ${init?.method ?? "GET"}`);
+    }) as typeof fetch;
+
+    const host = testWindow.document.createElement("div");
+    testWindow.document.body.appendChild(host as never);
+    const { createRoot } = await import("react-dom/client");
     await act(async () => {
-      const el = select();
-      if (!el) throw new Error("strategy select missing");
-      Object.getOwnPropertyDescriptor(testWindow.HTMLSelectElement.prototype, "value")!
-        .set!.call(el, "fill-first");
-      el.dispatchEvent(new testWindow.Event("change", { bubbles: true }));
+      mountedRoot = createRoot(host);
+      mountedRoot.render(
+        <LanguageProvider>
+          <CodexPoolStrategySetting
+            apiBase="http://proxy"
+            subscribeLoadObserver={(next) => {
+              observer = next;
+              return () => { observer = null; };
+            }}
+          />
+        </LanguageProvider>,
+      );
+    });
+    await act(async () => { await flush(); });
+
+    expect(observer).not.toBeNull();
+    const startedBeforeSave = observer!.beginActiveRead();
+    await act(async () => {
+      observer!.acceptActiveRead({
+        accountPoolStrategy: "quota",
+        accountPoolStickyLimit: 1,
+      }, startedBeforeSave);
       await flush();
     });
+    expect(strategyTrigger(host).textContent).toContain("Quota");
 
-    expect(select()?.value).toBe("quota");
-    expect(host.textContent).toContain("Rotation strategy could not be saved");
+    await pickStrategy(host, "Round-robin");
+    expect(strategyTrigger(host).textContent).toContain("Round-robin");
+
+    await act(async () => {
+      // Stale poll that began before the PUT must not clobber the optimistic value.
+      observer!.acceptActiveRead({
+        accountPoolStrategy: "quota",
+        accountPoolStickyLimit: 1,
+      }, startedBeforeSave);
+      await flush();
+    });
+    expect(strategyTrigger(host).textContent).toContain("Round-robin");
+
+    await act(async () => {
+      put.resolve(new Response(JSON.stringify({
+        ok: true,
+        accountPoolStrategy: "round-robin",
+        accountPoolStickyLimit: 1,
+      }), { status: 200 }));
+      await flush();
+    });
+    expect(strategyTrigger(host).textContent).toContain("Round-robin");
   });
 
   test("renders the card title once, without a duplicate field label", async () => {

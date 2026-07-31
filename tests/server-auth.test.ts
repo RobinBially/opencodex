@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { logsFromApiBody } from "./helpers/logs-api";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
 import { getTrackedCodexWebSocketCountForAccount } from "../src/codex/websocket-registry";
@@ -36,7 +38,16 @@ import { configuredAdminToken } from "../src/lib/admin-secrets";
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
 const originalGlobalFetch = globalThis.fetch;
-const TEST_DIR = join(import.meta.dir, ".tmp-server-auth-test");
+// A per-run directory, not a fixed path. This used to be
+// join(import.meta.dir, ".tmp-server-auth-test"), the exact same literal that
+// management-provider-validation.test.ts also declared, and both files delete and
+// recreate it while pointing OPENCODEX_HOME there. `bun test --isolate` gives each file
+// its own module registry but shares one process and one filesystem, so whichever run was
+// mid-test when the other wiped the directory lost its config and credentials and started
+// answering 401 where the test expected the upstream's original 400. That also breaks two
+// concurrent runs of THIS file alone, which a rename could not fix. mkdtempSync matches the
+// isolation convention already used by tests/helpers/isolated-codex-home.ts.
+const TEST_DIR = mkdtempSync(join(tmpdir(), "ocx-server-auth-"));
 let isolatedCodexHome: IsolatedCodexHome | null = null;
 
 function config(hostname?: string): OcxConfig {
@@ -1610,7 +1621,7 @@ describe("server local API auth", () => {
       ws.close();
 
       expect(seenAuth).toEqual(["Bearer old-access-token", "Bearer new-access-token"]);
-      const logs = await fetch(new URL("/api/logs?tail=2", server.url), { headers: managementHeaders() }).then(r => r.json()) as Array<{ status: number }>;
+      const logs = logsFromApiBody(await fetch(new URL("/api/logs?tail=2", server.url), { headers: managementHeaders() }).then(r => r.json()));
       expect(logs.map(entry => entry.status)).toEqual([200, 200]);
     } finally {
       Date.now = originalNow;
@@ -1682,14 +1693,7 @@ describe("server local API auth", () => {
       await waitForTerminal();
       ws.close();
 
-      const logs = await fetch(new URL("/api/logs?tail=1", server.url), { headers: managementHeaders() }).then(r => r.json()) as Array<{
-        status: number;
-        terminalStatus?: string;
-        closeReason?: string;
-        usageStatus?: string;
-        totalTokens?: number;
-        usage?: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
-      }>;
+      const logs = logsFromApiBody(await fetch(new URL("/api/logs?tail=1", server.url), { headers: managementHeaders() }).then(r => r.json()));
       expect(logs.at(-1)).toMatchObject({
         status: 200,
         terminalStatus: "completed",
@@ -1945,14 +1949,18 @@ describe("server local API auth", () => {
   });
 
   test("missing or non-string detail never authorizes a pool retry", async () => {
-    for (const body of ["{}", '{"detail":null}', '{"detail":400}', '{"detail":{"message":"unsupported"}}']) {
-      const harness = await startPoolRetryHarness(() => rejectionResponse(body));
-      try {
+    const bodies = ["{}", '{"detail":null}', '{"detail":400}', '{"detail":{"message":"unsupported"}}'];
+    let nextBody = 0;
+    const harness = await startPoolRetryHarness(() => rejectionResponse(bodies[nextBody++]!));
+    try {
+      for (const body of bodies) {
+        const priorDispatches = harness.dispatches.length;
         await expectOriginal400(await harness.request(), body);
-        expect(harness.dispatches).toEqual(["acct-pool-a"]);
-      } finally {
-        await stopPoolRetryHarness(harness);
+        expect(harness.dispatches.slice(priorDispatches)).toEqual(["acct-pool-a"]);
       }
+      expect(nextBody).toBe(bodies.length);
+    } finally {
+      await stopPoolRetryHarness(harness);
     }
   });
 
@@ -2200,7 +2208,7 @@ describe("server local API auth", () => {
         consecutiveFailures: 3,
         lastFailureStatus: 502,
       });
-      const logs = await fetch(new URL("/api/logs?tail=1", server.url), { headers: managementHeaders() }).then(r => r.json()) as Array<{ status: number; errorCode?: string; terminalStatus?: string; closeReason?: string }>;
+      const logs = logsFromApiBody(await fetch(new URL("/api/logs?tail=1", server.url), { headers: managementHeaders() }).then(r => r.json()));
       expect(logs.at(-1)).toMatchObject({
         status: 502,
         errorCode: "upstream_server_error",
@@ -2256,14 +2264,7 @@ describe("server local API auth", () => {
 
       expect(response.status).toBe(200);
       await response.text();
-      const logs = await fetch(new URL("/api/logs?tail=1", server.url), { headers: managementHeaders() }).then(r => r.json()) as Array<{
-        status: number;
-        terminalStatus?: string;
-        closeReason?: string;
-        usageStatus?: string;
-        totalTokens?: number;
-        usage?: { inputTokens: number; outputTokens: number; cachedInputTokens?: number; reasoningOutputTokens?: number };
-      }>;
+      const logs = logsFromApiBody(await fetch(new URL("/api/logs?tail=1", server.url), { headers: managementHeaders() }).then(r => r.json()));
       expect(logs.at(-1)).toMatchObject({
         status: 200,
         terminalStatus: "completed",

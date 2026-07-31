@@ -11,6 +11,8 @@ import { formatProviderDisplayName } from "../provider-icons";
 import { useProviderAccountPools } from "../hooks/useProviderAccountPools";
 import { useCodexAccountPool } from "../hooks/useCodexAccountPool";
 import { useJsonConfigEditor } from "../hooks/useJsonConfigEditor";
+import { useKeyedClientResource } from "../client-resource";
+import { readSessionListCache } from "../session-list-cache";
 import type { ProvidersConfig } from "./providers-shared";
 import { useProvidersOAuth } from "./use-providers-oauth";
 import { useProvidersCrud } from "./use-providers-crud";
@@ -20,15 +22,15 @@ import { buildAccountLoginStatus, buildAddModalAccountRows } from "./providers-p
 
 export default function Providers({ apiBase }: { apiBase: string }) {
   const t = useT();
-  const [config, setConfig] = useState<ProvidersConfig | null>(null);
+  const configCacheKey = `ocx.providers.config.v1:${apiBase}`;
+  const [config, setConfig] = useState<ProvidersConfig | null>(
+    () => readSessionListCache<ProvidersConfig>(configCacheKey),
+  );
   const [adding, setAdding] = useState(false);
   const [status, setStatus] = useState("");
   const [statusOk, setStatusOk] = useState(false);
   const [oauthProviders, setOauthProviders] = useState<string[]>([]);
   const [oauthStatus, setOauthStatus] = useState<Record<string, import("./providers-shared").OAuthStatus>>({});
-  // Value is unread: the workspace shell fetches its own quota view. The setter stays
-  // because the refresh path still primes this cache for that shell.
-  const [, setQuotaReports] = useState<Record<string, import("./providers-shared").ProviderQuotaReport>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [loginInfo, setLoginInfo] = useState<{ provider: string; url?: string; instructions?: string; deviceCode?: string } | null>(null);
   const [workspaceSelected, setWorkspaceSelected] = useState<string | null>(null);
@@ -39,6 +41,9 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const [modelsRefreshToken, setModelsRefreshToken] = useState(0);
   const [oauthTosPending, setOauthTosPending] = useState<{ provider: string; addAccount: boolean } | null>(null);
   const aliveRef = useRef(true);
+  // Which apiBase this instance has already bootstrapped. StrictMode double-invokes the mount
+  // effect and its deferred load is deliberately uncancellable, so the guard lives here.
+  const bootstrapKeyRef = useRef<string | null>(null);
   const removeBusyRef = useRef(false);
   const oauthLoginGenerationRef = useRef<Map<string, number>>(new Map());
 
@@ -50,8 +55,53 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
   // Providers hash sync is owned by App (passive replaceHash / deliberate navigateHash).
 
+  // Warm the Add Provider catalog cache while the page is open so opening the
+  // modal does not wait on a cold /api/provider-presets round-trip (~same key as
+  // AddProviderModal). Prefetch usage too so the catalog does not paint alpha then
+  // re-rank when the slow usage probe (~5s cold) finally returns.
+  useKeyedClientResource(
+    `add-provider-presets:${apiBase}`,
+    [apiBase],
+    async (signal) => {
+      const res = await fetch(`${apiBase}/api/provider-presets`, { signal });
+      if (!res.ok) throw new Error(String(res.status));
+      const data = await res.json() as { providers?: unknown[] };
+      return Array.isArray(data.providers) && data.providers.length > 0 ? data.providers : null;
+    },
+  );
+  useKeyedClientResource(
+    `add-provider-usage:${apiBase}`,
+    [apiBase],
+    async (signal) => {
+      const res = await fetch(`${apiBase}/api/usage?range=30d`, { signal });
+      if (!res.ok) return {} as Record<string, number>;
+      const data = await res.json() as { providers?: Array<{ provider: string; requests: number }> };
+      const rank: Record<string, number> = {};
+      for (const row of data.providers ?? []) rank[row.provider] = row.requests;
+      return rank;
+    },
+  );
+  /*
+   * Quota revalidation is driven by an explicit revision, not by anything derived from
+   * `accountSets`.
+   *
+   * The derived key was a sorted `provider:activeAccountId` string, which looked stable but
+   * is not: on a cold load each provider's account response arrives separately and fills in
+   * its own `activeAccountId`, so the joined string changed once per provider and the shell's
+   * quota effect re-ran with it. Measured on this checkout: six `/api/provider-quotas` reads
+   * inside 15ms where one answers the question.
+   *
+   * A counter only moves when something actually invalidates the quotas, so account arrival
+   * is silent while every real mutation path still forces a re-read.
+   */
+  const [quotaRefresh, setQuotaRefresh] = useState({ epoch: 0, force: false });
+  const invalidateProviderQuotas = useCallback((force = false) => {
+    setQuotaRefresh(previous => ({ epoch: previous.epoch + 1, force }));
+  }, []);
   const { fetchConfig, fetchOauth, fetchProviderQuotas } = useProvidersFetch({
-    apiBase, t, setConfig, setOauthProviders, setOauthStatus, setQuotaReports, notify,
+    apiBase, t, setConfig, setOauthProviders, setOauthStatus, notify,
+    invalidateProviderQuotas,
+    configCacheKey,
   });
 
   // WP3: one Codex account controller for the whole Providers page, shared by the
@@ -62,9 +112,30 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   // accounts/active pair this page used to poll on its own 30s timer.
   const codexActiveNeedsReauth = codexPool.activeNeedsReauth;
 
+  // Derive openai login status from the shared Codex controller (no duplicate /accounts).
+  const oauthStatusWithCodex = useMemo(() => {
+    const accounts = codexPool.accounts;
+    if (accounts.length === 0 && codexPool.loadState === "loading") return oauthStatus;
+    const main = accounts.find(a => a.isMain) ?? accounts[0];
+    const mainIsReal = !!main && !!main.email && main.email !== "Codex App login";
+    const poolLoggedIn = accounts.some(a => !a.isMain && (a.hasCredential || a.email));
+    const codexLoggedIn = mainIsReal || poolLoggedIn;
+    const codexEmail = mainIsReal
+      ? main?.email
+      : (accounts.find(a => !a.isMain && a.email)?.email ?? undefined);
+    return {
+      ...oauthStatus,
+      openai: {
+        loggedIn: codexLoggedIn,
+        ...(codexEmail ? { email: codexEmail } : {}),
+        ...(codexActiveNeedsReauth ? { needsReauth: true } : {}),
+      },
+    };
+  }, [oauthStatus, codexPool.accounts, codexPool.loadState, codexActiveNeedsReauth]);
+
   const pools = useProviderAccountPools({
     apiBase, t: t as unknown as Parameters<typeof useProviderAccountPools>[0]["t"],
-    config, oauthStatus, aliveRef,
+    config, oauthStatus: oauthStatusWithCodex, aliveRef,
     notify,
     fetchConfig, fetchOauth, fetchProviderQuotas, codexActiveNeedsReauth,
   });
@@ -73,13 +144,6 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     switchAccount, switchApiKey, removeApiKey, addApiKeyValue, editCredentialAlias,
     removeAccount, activeAccountNeedsReauth,
   } = pools;
-  const quotaRefreshKey = useMemo(
-    () => Object.entries(accountSets)
-      .map(([provider, set]) => `${provider}:${set.activeAccountId ?? ""}`)
-      .sort()
-      .join("|"),
-    [accountSets],
-  );
   const jsonEditor = useJsonConfigEditor({
     apiBase, config,
     notify,
@@ -93,15 +157,19 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   } = jsonEditor;
 
   useEffect(() => {
-    const timeout = window.setTimeout(() => {
+    // Deferred by a microtask, not a timer. A timer had to be cancelled in cleanup, so navigating
+    // away within the same tick dropped both requests with nothing to retry them and the page came
+    // back empty on the next visit. A microtask cannot be cancelled, so the requests always go out.
+    // Guarded per identity because StrictMode double-invokes this effect on mount and an
+    // uncancellable microtask would otherwise bootstrap the page twice.
+    // Quotas: workspace shell owns /api/provider-quotas — do not double-fetch on mount.
+    if (bootstrapKeyRef.current === apiBase) return;
+    bootstrapKeyRef.current = apiBase;
+    void Promise.resolve().then(() => {
       void fetchConfig();
       void fetchOauth();
-      void fetchProviderQuotas();
-    }, 0);
-    return () => {
-      window.clearTimeout(timeout);
-    };
-  }, [fetchConfig, fetchOauth, fetchProviderQuotas]);
+    });
+  }, [apiBase, fetchConfig, fetchOauth]);
 
   const bumpModelsRefresh = () => setModelsRefreshToken(n => n + 1);
 
@@ -133,13 +201,20 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         </div>
         {status
           ? <Notice tone="err">{status}</Notice>
-          : <div className="muted">{t("prov.loadingConfig")}</div>}
+          : (
+            <div className="providers-workspace providers-workspace--boot" aria-busy="true">
+              <div className="providers-workspace-rail providers-workspace-rail--boot" aria-hidden="true" />
+              <div className="providers-workspace-main">
+                <p className="muted"><span className="spin" aria-hidden="true" /> {t("prov.loadingConfig")}</p>
+              </div>
+            </div>
+          )}
       </>
     );
   }
 
   const addModalAccountRows = buildAddModalAccountRows(config, oauthProviders);
-  const accountLoginStatus = buildAccountLoginStatus(config, oauthStatus);
+  const accountLoginStatus = buildAccountLoginStatus(config, oauthStatusWithCodex);
   const isForwardProvider = (name: string) => config.providers[name]?.authMode === "forward";
 
   const onAccountLogin = async (provider: string) => {
@@ -210,7 +285,8 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         jsonSaving={jsonSaving}
         modelsRefreshToken={modelsRefreshToken}
         activeAccountNeedsReauth={activeAccountNeedsReauth}
-        quotaRefreshKey={quotaRefreshKey}
+        quotaRefreshEpoch={quotaRefresh.epoch}
+        quotaForceRefresh={quotaRefresh.force}
         detail={(item, data) => {
           const loginStatus = accountLoginStatus[item.name] ?? oauthStatus[item.name];
           return (

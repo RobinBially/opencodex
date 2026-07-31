@@ -15,7 +15,8 @@ import Grok from "./pages/Grok";
 import Startup from "./pages/Startup";
 import Remote from "./pages/Remote";
 import ErrorBoundary from "./components/ErrorBoundary";
-import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX } from "./icons";
+import { SidebarGithubRow } from "./components/sidebar-github-row";
+import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX } from "./icons";
 import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n/shared";
 import { Select, Switch } from "./ui";
 import { installApiAuthFetch } from "./api";
@@ -283,9 +284,16 @@ export default function App() {
             aria-label={t("dash.stop")} title={t("dash.stop")}>
             <IconPower /> <span className="mode">{stopping ? t("dash.stopping") : t("dash.stop")}</span>
           </button>
-          <a className="sidebar-link" href="https://github.com/lidge-jun/opencodex" target="_blank" rel="noreferrer">
-            <IconGithub /> {t("common.github")}
-          </a>
+          <SidebarGithubRow
+            apiBase={API_BASE}
+            onOpenUpdate={() => {
+              // The update dialog lives on the dashboard maintenance panel. Deep-link to
+              // `#dashboard/update` and let the dashboard own the check/run flow — no
+              // cross-component event bus, and the link survives a refresh.
+              setNavOpen(false);
+              navigateToPage("dashboard", "update");
+            }}
+          />
         </div>
       </aside>
 
@@ -304,8 +312,8 @@ export default function App() {
             {page === "startup" && <Startup apiBase={API_BASE} />}
             {page === "providers" && <Providers apiBase={API_BASE} />}
             {page === "models" && <Models apiBase={API_BASE} />}
-            {page === "combos" && <Combos apiBase={API_BASE} />}
-            {page === "subagents" && <Subagents apiBase={API_BASE} />}
+            {page === "combos" && <Combos key={API_BASE} apiBase={API_BASE} />}
+            {page === "subagents" && <Subagents key={API_BASE} apiBase={API_BASE} />}
             {page === "logs" && <Logs apiBase={API_BASE} />}
             {page === "usage" && <Usage apiBase={API_BASE} />}
             {page === "storage" && <Storage apiBase={API_BASE} />}

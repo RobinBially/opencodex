@@ -1,0 +1,124 @@
+# 050 — windows-latest 플레이크 RCA
+
+CI가 세 번 연속 빨간데 **매번 다른 테스트**가 죽었다. 이런 모양이면 보통 원인이
+테스트가 아니라 환경이다. 기록해두는 이유는, 다음에 이 색깔을 보는 사람이 같은
+진단을 처음부터 다시 하지 않도록 하기 위해서다.
+
+## 관측
+
+| 커밋 | 죽은 테스트 | 시간 |
+|---|---|---|
+| `bf9bc1ac8` | Windows tray packaging — detached tray host가 listen 소켓을 안 물고 뜨는지 | — |
+| `f2b61ee7e` | `GET /api/github/star` ×2 | 5015ms, 5001ms |
+| `6e1cdb7de` | server local API auth — pool retry 인가 안 함 ×2 | 5353ms, 412ms |
+
+`bf9bc1ac8`은 **내 푸시 이전** 커밋이다. 즉 이 라운드가 만든 문제가 아니다.
+셋 다 로컬에서 통과하고, 셋 다 해당 파일이 그 푸시의 diff에 없다.
+
+공통점은 5초다. Bun의 테스트 예산이 5초이고, 세 건 모두 **러너가 통제하는 무언가를
+기다리다** 그 예산을 넘겼다. 다만 기다리는 대상은 서로 다르다 — 하나의 원인으로
+묶으려다 틀리는 것보다 셋을 따로 보는 게 맞았다.
+
+## 원인 1 — sidebar: 진짜 `gh`를 띄운다
+
+`star-state.ts:55`의 `spawnGh()`가 사용자의 실제 `gh` 프로세스를 띄운다.
+`AUTH_TIMEOUT_MS = 5_000`.
+
+여기서 중요한 건, **이미 한 번 고쳐진 적이 있다는 것**이다. `0af17fbfd`가
+Windows `.cmd` shim 해석을 `commandInvocation`으로 돌렸고, 코드 주석이 그 사실을
+명시한다:
+
+> On Windows `gh` is a `.cmd` shim ... which is how these sidebar tests turned into
+> 5s timeouts on windows-latest while passing everywhere else.
+
+그런데 `f2b61ee7e`는 `0af17fbfd` **이후**인데도 같은 자리에서 죽었다. 바이너리를
+정확히 찾아주는 것과, 부하 걸린 러너에서 그 프로세스가 빨리 끝나는 것은 다른
+문제다. 첫 수정은 필요했지만 충분하지 않았다.
+
+진짜 문제는 **라우트 테스트가 외부 바이너리를 띄운다는 사실 자체**다. `gh`의 설치
+여부, 인증 헬퍼, Windows shim은 전부 라우트 계약 밖이다.
+
+수정: `star-state.ts`에 이미 있던 `StarDeps`의 주입 가능한 `runGh`를
+`setStarDepsForTests()`로 선택한다. 테스트는 자기가 실제로 주장하는 것 —
+라우트 도달 가능성, 응답 형태, 그리고 `gh` 출력·토큰·계정 식별자가 절대
+직렬화되지 않는다는 것 — 을 결정적인 fake로 검증한다. 5초가 0.25ms가 됐다.
+프로덕션은 진짜 러너를 그대로 쓴다.
+
+## 원인 2 — server auth: 한 테스트가 하니스를 네 번 띄운다
+
+malformed-detail 케이스 네 개가 각각 프록시/업스트림 하니스를 새로 세웠다.
+Windows에서는 그 기동 비용만으로 예산이 찼고, 마지막 요청이 아직 날아가는 중에
+다음 테스트가 시작돼 전역 `fetch`를 두고 경합했다. 412ms짜리 실패가 그 흔적이다.
+
+수정: 하니스 하나를 네 케이스가 공유한다. 각 케이스는 여전히 자기 원본 400과
+`acct-pool-a` 단일 dispatch를 증명한다.
+
+## 원인 3 — tray: 안 고쳤다
+
+`windows-tray.test.ts:247`이 PowerShell을 띄우고, 거기서 Bun 자식을 띄우고,
+같은 포트에 다시 bind한다. **자식이 listen 소켓을 물려받지 않는다는 것을 증명하는
+게 이 테스트의 존재 이유다.**
+
+결정적으로 만들려면 `src/tray/windows.ts:464`에 프로세스 기동 seam이 필요하다.
+테스트에서만 흉내내면 증명이 사라진다 — 소켓 상속은 진짜 프로세스를 띄워야만
+관측되는 성질이다. 그래서 손대지 않았다.
+
+**이건 미해결이다.** 초록으로 만들 수 있었지만 그렇게 하면 테스트가 지키던 것을
+버리는 것이다.
+
+## 하지 않은 것
+
+타임아웃을 올리지 않았다. 테스트를 skip하지 않았다. assertion을 지우지 않았다.
+셋 다 빨간색을 없애지만 신뢰성 신호를 침묵으로 바꾼다. `020`에서 무력한 테스트
+세 건을 지적해놓고 여기서 같은 짓을 하면 앞뒤가 안 맞는다.
+
+## 인접 작업
+
+PR #801(luvs01)이 Windows PowerShell 프로세스 열거 플레이크를 다룬다 — CIM
+열거가 첫 시도에 빈 결과를 주면 한 번 재시도. 우리가 고친 것과 다른 지점이고
+충돌하지 않는다.
+
+PR #805(Wibias)가 #764의 `--native` 잔여를 닫는다. 지난 라운드에서 내가 열어둔
+바로 그 절반이다.
+
+## 추가 관측 — 진짜 원인은 따로 있었다
+
+수정을 올린 뒤(`ebd4cdf02`) Windows가 **여전히** 빨갰다. 그런데 로그를 끝까지
+읽으니 실패한 테스트가 **0개**였다:
+
+```
+Elapsed: 38396ms | User: 12062ms | Sys: 4421ms
+RSS: 0.63GB | Peak: 0.73GB | Commit: 1.18GB | Faults: 415745 | Machine: 17.18GB
+
+panic(thread 2852): Internal assertion failure
+oh no: Bun has crashed. This indicates a bug in Bun, not your code.
+##[error]Process completed with exit code 1.
+```
+
+테스트가 실패한 게 아니라 **Bun 런타임이 죽었다.** Bun v1.3.14, Windows x64,
+`bun test --isolate tests`.
+
+이게 "매번 다른 테스트가 죽는" 현상의 진짜 설명이다. 프로세스가 임의의 지점에서
+터지면, 그 순간 실행 중이던 테스트가 실패로 기록된다 — 그 테스트의 잘못이 아니라
+타이밍의 문제다. 그래서 tray → sidebar → server-auth로 옮겨다녔다.
+
+`010`에서 #744와 #693의 Windows 실패를 "Bun 런타임 패닉" 클래스로 분류해뒀는데,
+그게 이거였다. 그때는 별개 현상으로 봤지만 같은 것이다.
+
+**그럼 우리 수정은 헛수고였나.** 아니다. 두 수정은 여전히 옳다:
+
+- sidebar가 실제 `gh`를 띄우는 건 크래시와 무관하게 비결정적이었다. 5초 타임아웃이
+  0.25ms가 됐다.
+- server-auth가 한 테스트에서 하니스를 네 번 세우고 전역 `fetch`를 두고 경합한 것도
+  실재하는 결함이었다.
+
+다만 **그 둘을 고쳐도 Windows는 초록이 되지 않는다.** 남은 건 Bun 자체 버그다.
+`Faults: 415745`와 `Commit: 1.18GB`가 같이 찍힌 걸 보면 메모리 압박과 관련이
+있을 수 있지만, 그건 추측이고 확인하지 않았다.
+
+### 다음 사람에게
+
+Windows CI가 빨갈 때 **테스트 이름부터 보지 말고 로그 끝을 먼저 봐라.**
+`panic(thread N): Internal assertion failure`가 있으면 그 테스트는 무죄다.
+Bun 업스트림 이슈이고, 우리 쪽에서 고칠 수 있는 게 아니다. 크래시 리포트 링크가
+로그에 함께 찍힌다.

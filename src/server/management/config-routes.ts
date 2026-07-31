@@ -24,6 +24,7 @@ import {
 import { removeCredential } from "../../oauth/store";
 import { providerDestinationResolvedError } from "../../lib/destination-policy";
 import { isStreamMode } from "../../lib/bun-stream-caps";
+import { shadowSourceModels } from "../../lib/shadow-call";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../../oauth/key-providers";
 import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
@@ -110,6 +111,11 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       );
     }
     return jsonResponse({
+      // The dashboard renders request-log timestamps. Without this it formats them in the
+      // BROWSER's zone, so a KST proxy viewed from a UTC browser reports every request nine
+      // hours off (#725). Carried on settings rather than /api/logs because that route's
+      // array response has four consumers that would have to change with it.
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       codexAutoStart: codexAutoStartEnabled(config),
       port: config.port,
       hostname: config.hostname ?? "127.0.0.1",
@@ -140,16 +146,20 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
   }
 
   if (url.pathname === "/api/startup-action" && req.method === "POST") {
-    let body: { action?: unknown };
+    let body: { action?: unknown; repair?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (!body || !["install-service", "install-shim"].includes(String(body.action))) {
       return jsonResponse({ error: "action must be install-service or install-shim" }, 400);
     }
+    if (body.repair !== undefined && typeof body.repair !== "boolean") {
+      return jsonResponse({ error: "repair must be a boolean when provided" }, 400);
+    }
     try {
       const action = body.action as StartupInstallAction;
-      const result = await (deps.runStartupInstallAction ?? runStartupInstallAction)(action);
+      const repair = body.repair === true;
+      const result = await (deps.runStartupInstallAction ?? runStartupInstallAction)(action, { repair });
       invalidateStartupHealthCache();
-      return jsonResponse({ ok: true, action, message: result.message });
+      return jsonResponse({ ok: true, action, repair, message: result.message });
     } catch (error) {
       return jsonResponse({ error: error instanceof Error ? error.message : String(error) }, 500);
     }
@@ -227,8 +237,6 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     const { syncModelsToCodex } = await import("../../codex/sync");
     const { attachStaleAppServerHint } = await import("../../codex/app-server-processes");
     const result = await syncModelsToCodex(undefined, config, null);
-    // Hint only after a real catalog/cache write — never enumerate processes here
-    // (WMIC/PowerShell would block Bun's event loop on every dashboard sync).
     return jsonResponse({
       ...attachStaleAppServerHint(result),
       ...(result.ok ? {} : { error: result.message }),
@@ -352,7 +360,11 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
 
   if (url.pathname === "/api/shadow-call-settings" && req.method === "GET") {
     const sci = config.shadowCallIntercept ?? {};
-    return jsonResponse({ enabled: sci.enabled === true, model: sci.model ?? "" });
+    return jsonResponse({
+      enabled: sci.enabled === true,
+      model: sci.model ?? "",
+      sourceModels: shadowSourceModels(sci.sourceModels),
+    });
   }
 
   if (url.pathname === "/api/shadow-call-settings" && req.method === "PUT") {
@@ -374,7 +386,12 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     }
     saveConfigPreservingClaudeCode(config);
     const sci = config.shadowCallIntercept;
-    return jsonResponse({ ok: true, enabled: sci.enabled === true, model: sci.model ?? "" });
+    return jsonResponse({
+      ok: true,
+      enabled: sci.enabled === true,
+      model: sci.model ?? "",
+      sourceModels: shadowSourceModels(sci.sourceModels),
+    });
   }
   return null;
 }

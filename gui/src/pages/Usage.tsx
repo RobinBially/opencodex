@@ -1,9 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n, type TFn, type Locale } from "../i18n/shared";
 import { formatTokens } from "../format-tokens";
 import { formatEstimatedUsdValue as formatUsdEstimate } from "../intl-formatters";
+import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { EmptyState, Notice } from "../ui";
 import { modelLabel } from "../model-display";
+import { useDataSurface } from "../data-surface";
+import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
+import { SectionTabs } from "../components/section-tabs";
+import { sectionAnchorId } from "../section-anchors";
 
 type Range = "all" | "30d" | "7d";
 type UsageSurface = "all" | "codex" | "claude" | "grok";
@@ -319,7 +324,10 @@ function WeekDayBars({ weekBars, locale, t }: { weekBars: UsageDay[]; locale: Lo
             onMouseLeave={() => setHoverDay(current => (current === day.date ? null : current))}
           >
             <div className="daybar-track">
-              <div className="daybar-stack" style={{ height: `${percentage}%` }}>
+              <div
+                className="daybar-stack"
+                style={{ ["--daybar-scale" as string]: String(Math.max(0, Math.min(1, percentage / 100))) }}
+              >
                 {day.models.map(model => (
                   <div
                     key={`${model.provider}/${model.model}`}
@@ -439,18 +447,37 @@ function UsageHeatmapPanel({
   );
 }
 
+function UsageWorkspaceSection({
+  title,
+  titleId,
+  children,
+}: {
+  title: string;
+  titleId: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="usw-section" aria-labelledby={titleId}>
+      <h3 id={titleId} className="h-section">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
 function UsageModelsTable({
   models,
   modelQuery,
   onModelQuery,
   locale,
   t,
+  workspace = false,
 }: {
   models: UsageModel[];
   modelQuery: string;
   onModelQuery: (query: string) => void;
   locale: Locale;
   t: TFn;
+  workspace?: boolean;
 }) {
   const searchLabel = t("usage.search.models");
   const sectionLabel = t("usage.section.models");
@@ -465,7 +492,7 @@ function UsageModelsTable({
     />
   );
   const table = (
-    <div className="tbl-wrap usage-scroll">
+    <div className="tbl-wrap">
       <table className="tbl">
         <thead>
           <tr>
@@ -493,6 +520,15 @@ function UsageModelsTable({
     </div>
   );
 
+  if (workspace) {
+    return (
+      <UsageWorkspaceSection title={sectionLabel} titleId={titleId}>
+        <div className="usw-section-toolbar">{searchInput}</div>
+        {table}
+      </UsageWorkspaceSection>
+    );
+  }
+
   return (
     <section className="panel" style={{ marginTop: 16 }} aria-labelledby={titleId}>
       <div className="panel-head">
@@ -508,15 +544,17 @@ function UsageProvidersTable({
   providers,
   locale,
   t,
+  workspace = false,
 }: {
   providers: UsageProvider[];
   locale: Locale;
   t: TFn;
+  workspace?: boolean;
 }) {
   const sectionLabel = t("usage.section.providers");
   const titleId = "usage-providers-title";
   const table = (
-    <div className="tbl-wrap usage-scroll">
+    <div className="tbl-wrap">
       <table className="tbl">
         <thead>
           <tr>
@@ -542,6 +580,14 @@ function UsageProvidersTable({
     </div>
   );
 
+  if (workspace) {
+    return (
+      <UsageWorkspaceSection title={sectionLabel} titleId={titleId}>
+        {table}
+      </UsageWorkspaceSection>
+    );
+  }
+
   return (
     <section className="panel" style={{ marginTop: 16 }} aria-labelledby={titleId}>
       <h3 id={titleId} className="panel-title">{sectionLabel}</h3>
@@ -553,9 +599,11 @@ function UsageProvidersTable({
 function UsageCoveragePanel({
   summary,
   t,
+  workspace = false,
 }: {
   summary: UsageSummaryTotals;
   t: TFn;
+  workspace?: boolean;
 }) {
   const sectionLabel = t("usage.section.coverage");
   const titleId = "usage-coverage-title";
@@ -572,6 +620,14 @@ function UsageCoveragePanel({
     </>
   );
 
+  if (workspace) {
+    return (
+      <UsageWorkspaceSection title={sectionLabel} titleId={titleId}>
+        {body}
+      </UsageWorkspaceSection>
+    );
+  }
+
   return (
     <section className="panel" style={{ marginTop: 16 }} aria-labelledby={titleId}>
       <h3 id={titleId} className="panel-title">{sectionLabel}</h3>
@@ -580,51 +636,139 @@ function UsageCoveragePanel({
   );
 }
 
+/**
+ * Workspace layout for Usage: left rail picks one report section so Overview /
+ * Models / Providers / Coverage do not stack into a long scroll.
+ */
+function UsageWorkspaceBody({
+  data,
+  heatmap,
+  weekBars,
+  activeDays,
+  filteredModels,
+  modelQuery,
+  onModelQuery,
+  sortedProviders,
+  range,
+  locale,
+  t,
+}: {
+  data: UsageResponse | null;
+  heatmap: ReturnType<typeof buildHeatmap>;
+  weekBars: UsageDay[];
+  activeDays: number;
+  filteredModels: UsageModel[];
+  modelQuery: string;
+  onModelQuery: (query: string) => void;
+  sortedProviders: UsageProvider[];
+  range: Range;
+  locale: Locale;
+  t: TFn;
+}) {
+  const empty = !!data && data.summary.requests === 0;
+  const sections = [
+    {
+      id: "overview",
+      label: t("usage.section.overview"),
+      meta: data ? `${data.summary.requests}` : "—",
+      body: data ? (
+        <>
+          <UsageSummaryCards summary={data.summary} activeDays={activeDays} locale={locale} t={t} />
+          <UsageHeatmapPanel range={range} heatmap={heatmap} weekBars={weekBars} locale={locale} t={t} />
+        </>
+      ) : null,
+    },
+    {
+      id: "models",
+      label: t("usage.section.models"),
+      meta: data ? `${data.models.length}` : "—",
+      body: data
+        ? <UsageModelsTable models={filteredModels} modelQuery={modelQuery} onModelQuery={onModelQuery} locale={locale} t={t} workspace />
+        : null,
+    },
+    {
+      id: "providers",
+      label: t("usage.section.providers"),
+      meta: data ? `${data.providers.length}` : "—",
+      body: data
+        ? <UsageProvidersTable providers={sortedProviders} locale={locale} t={t} workspace />
+        : null,
+    },
+    {
+      id: "coverage",
+      label: t("usage.section.coverage"),
+      meta: data ? formatPct(data.summary.coverageRatio) : "—",
+      body: data ? <UsageCoveragePanel summary={data.summary} t={t} workspace /> : null,
+    },
+  ];
+  return (
+    <div className="usage-workspace-shell">
+      <div className="usage-workspace-root">
+        {/*
+          Every section stays in the document and the page scrolls; the pinned strip scrolls
+          to one instead of swapping the panel. Switching by replacement meant only one
+          section existed at a time, so the report could not be read by scrolling at all.
+        */}
+        <SectionTabs
+          scope="usage"
+          ariaLabel={t("usage.workspace.sections")}
+          items={sections.map(s => ({ id: s.id, label: s.label, meta: s.meta }))}
+        />
+        <section className="usage-workspace-main" aria-label={t("usage.workspace.report")}>
+          {empty ? <EmptyState title={t("usage.empty")} /> : sections.map(s => (
+            <div key={s.id} id={sectionAnchorId("usage", s.id)} className="usw-body usw-section-block">
+              {s.body}
+            </div>
+          ))}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+/** Held usage payloads so provider/surface tab switches skip a cold ~5s refetch. */
+const usageMemoryCache = new Map<string, UsageResponse>();
+
+function usageCacheKey(apiBase: string, range: Range, surface: UsageSurface): string {
+  return `ocx.usage.v1:${apiBase}:${range}:${surface}`;
+}
+
+function readHeldUsage(apiBase: string, range: Range, surface: UsageSurface): UsageResponse | null {
+  const key = usageCacheKey(apiBase, range, surface);
+  return usageMemoryCache.get(key) ?? readSessionListCache<UsageResponse>(key);
+}
+
+function writeHeldUsage(apiBase: string, range: Range, surface: UsageSurface, value: UsageResponse) {
+  const key = usageCacheKey(apiBase, range, surface);
+  usageMemoryCache.set(key, value);
+  writeSessionListCache(key, value);
+}
+
 export default function Usage({ apiBase }: { apiBase: string }) {
   const { t, locale } = useI18n();
   const [range, setRange] = useState<Range>("30d");
   const [surface, setSurface] = useState<UsageSurface>("all");
-  const [data, setData] = useState<UsageResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [modelQuery, setModelQuery] = useState("");
-  const loadGenerationRef = useRef(0);
 
-  const fetchUsage = useCallback(async (nextRange: Range, nextSurface: UsageSurface, signal: AbortSignal) => {
-    const generation = ++loadGenerationRef.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`${apiBase}/api/usage?range=${nextRange}&surface=${nextSurface}`, { signal });
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
-      const json = await res.json() as UsageResponse;
-      if (signal.aborted || generation !== loadGenerationRef.current) return;
-      setData(json);
-    } catch (cause) {
-      // A stale request (range/apiBase changed, or unmount) must not overwrite newer state.
-      if (signal.aborted || generation !== loadGenerationRef.current) return;
-      const detail = cause instanceof Error ? cause.message : "";
-      setError(detail ? `${t("usage.loadError")} ${detail}` : t("usage.loadError"));
-    } finally {
-      // Only the current request may clear loading — a superseded abort must not
-      // settle the UI while a newer fetch is still in flight.
-      if (generation === loadGenerationRef.current) setLoading(false);
-    }
-  }, [apiBase, t]);
+  const loadUsage = useCallback(async (signal: AbortSignal): Promise<UsageResponse> => {
+    const response = await fetch(`${apiBase}/api/usage?range=${range}&surface=${surface}`, { signal });
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
+    const next = await response.json() as UsageResponse;
+    writeHeldUsage(apiBase, range, surface, next);
+    return next;
+  }, [apiBase, range, surface]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => {
-      void fetchUsage(range, surface, controller.signal);
-    }, 0);
-    return () => {
-      window.clearTimeout(timeout);
-      // Invalidate before abort so a superseded request's finally cannot clear
-      // loading in the gap before the deferred replacement increments generation.
-      loadGenerationRef.current += 1;
-      controller.abort();
-    };
-  }, [fetchUsage, range, surface]);
+  const cached = readHeldUsage(apiBase, range, surface);
+  // Range and surface identify different reports, so the key changes with both. That prevents
+  // a force-loading dependency revalidation from ever showing a previous report as this one.
+  const resource = useDataSurface<UsageResponse>(
+    usageCacheKey(apiBase, range, surface),
+    [apiBase, range, surface],
+    loadUsage,
+    { isEmpty: () => false },
+  );
+  const { state } = resource;
+  const data = state.data ?? cached ?? null;
 
   const heatmap = useMemo(() => buildHeatmap(data?.days ?? []), [data?.days]);
   const weekBars = useMemo(() => lastSevenDays(data?.days ?? []), [data?.days]);
@@ -654,31 +798,34 @@ export default function Usage({ apiBase }: { apiBase: string }) {
       </div>
       <p className="page-sub">{t("usage.subtitle")}</p>
 
-      {error ? (
+      {state.showSkeleton && !data ? (
+        <DataSurfaceSkeleton label={t("usage.loading")} rows={5} />
+      ) : state.kind === "failed-cold" ? (
         <Notice tone="err">
-          {error}{" "}
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={() => void fetchUsage(range, surface, new AbortController().signal)}
-            disabled={loading}
-          >
+          {state.error instanceof Error ? `${t("usage.loadError")} ${state.error.message}` : t("usage.loadError")}{" "}
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => resource.refresh()}>
             {t("common.retry")}
           </button>
         </Notice>
-      ) : loading && !data ? (
-        <EmptyState title={t("usage.loading")} />
-      ) : data?.summary.requests === 0 ? (
-        <EmptyState title={t("usage.empty")} />
-      ) : data ? (
+      ) : (
         <>
-          <UsageSummaryCards summary={data.summary} activeDays={activeDays} locale={locale} t={t} />
-          <UsageHeatmapPanel range={range} heatmap={heatmap} weekBars={weekBars} locale={locale} t={t} />
-          <UsageModelsTable models={filteredModels} modelQuery={modelQuery} onModelQuery={setModelQuery} locale={locale} t={t} />
-          <UsageProvidersTable providers={sortedProviders} locale={locale} t={t} />
-          <UsageCoveragePanel summary={data.summary} t={t} />
+          {state.showError && <Notice tone="err">{t("usage.loadError")}</Notice>}
+          {state.refreshing && <DataSurfaceStatus live={!state.showError}>{t("usage.loading")}</DataSurfaceStatus>}
+          <UsageWorkspaceBody
+            data={data}
+            heatmap={heatmap}
+            weekBars={weekBars}
+            activeDays={activeDays}
+            filteredModels={filteredModels}
+            modelQuery={modelQuery}
+            onModelQuery={setModelQuery}
+            sortedProviders={sortedProviders}
+            range={range}
+            locale={locale}
+            t={t}
+          />
         </>
-      ) : null}
+      )}
     </>
   );
 }
