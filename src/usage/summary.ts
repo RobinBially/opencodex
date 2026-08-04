@@ -119,7 +119,7 @@ function rangeWindow(range: UsageRange, now: number): { since: number | null; da
   return { since: null, days: 0 };
 }
 
-function localDateKey(ts: number): string {
+export function localDateKey(ts: number): string {
   const d = new Date(ts);
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -162,7 +162,7 @@ function isMeasuredStatus(status: UsageStatus): boolean {
   return status === "reported" || status === "estimated";
 }
 
-interface UsageAttribution {
+export interface UsageAttribution {
   requestId: string;
   provider: string;
   model: string;
@@ -178,7 +178,7 @@ interface UsageAttribution {
  * Google Antigravity collapses wire/compat/suffix ids to picker/call base models so
  * historical effort-variant logs merge with current base-model invocations.
  */
-function usageModelIdentity(
+export function usageModelIdentity(
   provider: string,
   model: string,
   resolvedModel?: string,
@@ -207,7 +207,7 @@ function antigravityUsageModel(provider: string, model: string): string {
   return canonicalAntigravityUsageModel(model);
 }
 
-function usageAttributions(entry: PersistedUsageEntry): UsageAttribution[] {
+export function usageAttributions(entry: PersistedUsageEntry): UsageAttribution[] {
   if (!entry.attempts?.length) {
     return [{
       requestId: entry.requestId,
@@ -228,7 +228,7 @@ function usageAttributions(entry: PersistedUsageEntry): UsageAttribution[] {
   }));
 }
 
-function foldAttributionStatuses(statuses: readonly UsageStatus[]): UsageStatus {
+export function foldAttributionStatuses(statuses: readonly UsageStatus[]): UsageStatus {
   if (statuses.length > 0 && statuses.every(status => status === "unsupported")) {
     return "unsupported";
   }
