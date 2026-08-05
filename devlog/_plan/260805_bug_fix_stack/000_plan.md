@@ -172,3 +172,14 @@ the whole suite and that pre-existing failure blocks every push from this tree.
 `DONE` for the four layers. #1059 (Windows suite, ~207 failures) stays out —
 it needs a Windows runner, and the triage established the failures are five
 distinct families rather than one fix.
+
+## CI, final
+
+All four PRs green as of 2026-08-06 02:0xZ. The only non-pass entries are the
+`windows` shard and `npm-global` legs reporting `skipping` — expected, the
+Windows leg is dispatch-only until #1059 is resolved.
+
+#1072's first macOS run failed on `native-profile-crash-boundaries.test.ts:178`
+— the exact defect #1071 fixes, on a branch that does not carry that fix. One
+rerun passed. That failure is the strongest field evidence yet for #1061: the
+flake fired on a clean CI runner within hours of the issue being triaged.
