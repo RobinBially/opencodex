@@ -446,14 +446,18 @@ export function readRollupSnapshot(): RollupSnapshot | null {
     // Read-time boundary validity (review threads: truncated/rewritten raw log
     // within a throttle window must not serve a stale sidecar). The fold path
     // performs the same check before appending; readers need it too because a
-    // truncate-then-regrow can happen entirely between folds.
-    const lastSegment = parsed.segments.at(-1);
-    if (lastSegment) {
+    // truncate-then-regrow can happen entirely between folds. EVERY segment is
+    // validated, not just the last: a same-size rewrite of an earlier folded
+    // span would leave the final segment's tail intact and otherwise pass.
+    if (parsed.segments.length > 0) {
       let fd: number | undefined;
       try {
         fd = openSync(usageLogPath(), "r");
         const rawSize = Number(fstatSync(fd).size);
-        if (rawSize < parsed.snapshot.cutlineOffset || !boundaryMatches(fd, lastSegment)) return null;
+        if (rawSize < parsed.snapshot.cutlineOffset) return null;
+        for (const segment of parsed.segments) {
+          if (!boundaryMatches(fd, segment)) return null;
+        }
       } catch {
         return null;
       } finally {
@@ -490,13 +494,15 @@ async function eligibleCutline(fd: number, size: number, fromOffset: number, now
       const line = pending.subarray(cursor, newline).toString("utf8").replace(/\r$/, "");
       if (line.trim()) {
         // A COMPLETE (newline-terminated) row that cannot carry usage data —
-        // unparseable JSON, a non-object, or an unusable timestamp — must not
-        // stall the cutline forever: the fold parse skips it identically, so
-        // advancing past it loses nothing. Only a usable timestamp at or past
-        // the cutoff stops eligibility (those rows are still too recent).
+        // unparseable JSON, a non-object, no string requestId, or an unusable
+        // timestamp — must not stall the cutline forever: the fold parse skips
+        // it identically (parseUsageRange requires a string requestId), so
+        // advancing past it loses nothing. Only a REAL usage row whose usable
+        // timestamp is at or past the cutoff stops eligibility (still too recent).
         let parsed: unknown;
         try { parsed = JSON.parse(line); } catch { parsed = null; }
-        if (isObject(parsed) && usableTimestamp(parsed.timestamp)
+        if (isObject(parsed) && typeof parsed.requestId === "string"
+          && usableTimestamp(parsed.timestamp)
           && localDateKey(parsed.timestamp) >= cutoff) return pendingStart + cursor;
       }
       eligible = pendingStart + newline + 1;

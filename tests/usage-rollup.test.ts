@@ -313,6 +313,41 @@ describe("usage rollup core", () => {
     expect(snapshot.days.reduce((sum, row) => sum + row.attemptCount, 0)).toBe(2);
   });
 
+  test("7b. a recent object row without a requestId cannot stall the cutline either", async () => {
+    const old = entry({ requestId: "old-real", timestamp: FIXED_NOW - 12 * DAY_MS });
+    const noId = `{"timestamp":${FIXED_NOW - DAY_MS},"provider":"openai"}\n`;
+    const oldAfter = entry({ requestId: "old-after", timestamp: FIXED_NOW - 11 * DAY_MS });
+    writeFileSync(usageLogPath(), `${rawLine(old)}${noId}${rawLine(oldAfter)}`, { mode: 0o600 });
+
+    await ensureRollupCurrent();
+    const snapshot = readRollupSnapshot()!;
+    // parseUsageRange requires a string requestId, so the id-less row can never
+    // contribute usage — the cutline advances past it instead of stalling.
+    expect(snapshot.cutlineOffset).toBe(statSync(usageLogPath()).size);
+    expect(snapshot.days.reduce((sum, row) => sum + row.attemptCount, 0)).toBe(2);
+  });
+
+  test("9b. a same-size rewrite of an EARLIER folded segment invalidates the snapshot at read time", async () => {
+    setFoldSegmentCapForTests(1); // one row per segment → multiple segments
+    try {
+      const first = entry({ requestId: "seg-one", timestamp: FIXED_NOW - 14 * DAY_MS });
+      const second = entry({ requestId: "seg-two", timestamp: FIXED_NOW - 12 * DAY_MS });
+      writeRaw([first, second]);
+      await ensureRollupCurrent();
+      expect(commits().length).toBeGreaterThanOrEqual(2);
+      expect(readRollupSnapshot()).not.toBeNull();
+
+      // Rewrite ONLY the first row, same byte length, leaving the final
+      // segment's bytes (and its boundary tail) untouched.
+      const tampered = entry({ requestId: "seg-0ne", timestamp: FIXED_NOW - 14 * DAY_MS });
+      expect(rawLine(tampered).length).toBe(rawLine(first).length);
+      writeFileSync(usageLogPath(), `${rawLine(tampered)}${rawLine(second)}`, { mode: 0o600 });
+      expect(readRollupSnapshot()).toBeNull();
+    } finally {
+      setFoldSegmentCapForTests(null);
+    }
+  });
+
   test("8. the fold catches up a backlog in bounded segments, one commit per segment", async () => {
     setFoldSegmentCapForTests(1); // every row closes a segment
     try {
