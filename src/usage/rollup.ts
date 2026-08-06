@@ -24,6 +24,7 @@ import {
   currentUsageLogRevision,
   normalizeUsageEntry,
   usageLogPath,
+  usageLogRevisionKey,
   type PersistedUsageEntry,
   type UsageStatus,
 } from "./log";
@@ -168,6 +169,8 @@ interface KeyAccumulator {
 }
 
 let rollupFlight: Promise<void> | null = null;
+/** Memoized read-time boundary validation, keyed on the raw log's revision. */
+let boundaryValidationCache: { key: string; valid: boolean } | null = null;
 
 function rollupPath(): string {
   return join(getConfigDir(), "usage-rollup.jsonl");
@@ -446,22 +449,39 @@ export function readRollupSnapshot(): RollupSnapshot | null {
     // Read-time boundary validity (review threads: truncated/rewritten raw log
     // within a throttle window must not serve a stale sidecar). The fold path
     // performs the same check before appending; readers need it too because a
-    // truncate-then-regrow can happen entirely between folds. EVERY segment is
-    // validated, not just the last: a same-size rewrite of an earlier folded
-    // span would leave the final segment's tail intact and otherwise pass.
+    // truncate-then-regrow can happen entirely between folds. EVERY segment's
+    // boundary window is validated, not just the last — a same-size rewrite of
+    // an earlier folded span would leave the final segment's tail intact.
+    //
+    // Scope, stated honestly: each boundary digest covers the trailing
+    // BOUNDARY_DIGEST_BYTES of its segment, so a surgical same-size rewrite
+    // strictly inside a segment's untailed span is not detected here. That is
+    // the fold-time contract too (the sidecar trusts an append-only log); the
+    // read-time check exists to catch the realistic failure — truncation,
+    // rotation, regrowth — not an adversarial editor with byte-level care.
+    //
+    // Cost: the validation is memoized per raw-log revision (dev/ino/size/
+    // mtime/ctime), so cached hot paths pay one fstat, not a re-hash of every
+    // segment on every call.
     if (parsed.segments.length > 0) {
-      let fd: number | undefined;
-      try {
-        fd = openSync(usageLogPath(), "r");
-        const rawSize = Number(fstatSync(fd).size);
-        if (rawSize < parsed.snapshot.cutlineOffset) return null;
-        for (const segment of parsed.segments) {
-          if (!boundaryMatches(fd, segment)) return null;
+      const revisionKey = `${usageLogRevisionKey(currentUsageLogRevision())}|${parsed.snapshot.cutlineOffset}|${parsed.segments.length}`;
+      if (boundaryValidationCache?.key === revisionKey) {
+        if (!boundaryValidationCache.valid) return null;
+      } else {
+        let valid = false;
+        let fd: number | undefined;
+        try {
+          fd = openSync(usageLogPath(), "r");
+          const rawSize = Number(fstatSync(fd).size);
+          valid = rawSize >= parsed.snapshot.cutlineOffset
+            && parsed.segments.every(segment => boundaryMatches(fd!, segment));
+        } catch {
+          valid = false;
+        } finally {
+          if (fd !== undefined) closeSync(fd);
         }
-      } catch {
-        return null;
-      } finally {
-        if (fd !== undefined) closeSync(fd);
+        boundaryValidationCache = { key: revisionKey, valid };
+        if (!valid) return null;
       }
     }
     return parsed.snapshot;
@@ -866,4 +886,5 @@ export async function ensureRollupCurrent(): Promise<void> {
 
 export function resetRollupForTests(): void {
   rollupFlight = null;
+  boundaryValidationCache = null;
 }
