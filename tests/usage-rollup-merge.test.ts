@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getConfigDir, saveConfig } from "../src/config";
@@ -322,5 +322,29 @@ describe("usage rollup reader merge", () => {
     expect(merged.attributionSince).toBe(reference.attributionSince);
     expect(merged.historyTruncated).toBeUndefined();
     expect(merged.rollup.get("key-a")).toMatchObject({ totalRequests: 2, requests7d: 1 });
+  });
+
+  test("7. disabling the rollup makes API-key summaries fall back to the raw tail only", async () => {
+    const entries = [
+      entry({ requestId: "old-folded", timestamp: FIXED_NOW - 15 * DAY_MS, admissionKind: "configured", apiKeyId: "key-a" }),
+      entry({ requestId: "recent-raw", timestamp: FIXED_NOW - 2 * DAY_MS, admissionKind: "configured", apiKeyId: "key-a" }),
+    ];
+    writeRaw(entries);
+    await foldUsagePrefix();
+    const cutline = readRollupSnapshot()!.cutlineOffset;
+    expect(cutline).toBeGreaterThan(0);
+
+    clearApiKeyUsageCacheForTests();
+    const withRollup = await readApiKeyUsageRollup(["key-a"], 64 * 1024 * 1024, true);
+    expect(withRollup.rollup.get("key-a")).toMatchObject({ totalRequests: 2 });
+
+    clearApiKeyUsageCacheForTests();
+    // Constrain the raw read so the folded prefix cannot be re-read from raw:
+    // with the rollup DISABLED the sidecar must contribute nothing, so only the
+    // raw entry that fits in the read window is counted.
+    const tailBytes = statSync(usageLogPath()).size - cutline;
+    const withoutRollup = await readApiKeyUsageRollup(["key-a"], tailBytes, false);
+    expect(withoutRollup.rollup.get("key-a")).toMatchObject({ totalRequests: 1 });
+    expect(withoutRollup.historyTruncated).toBe(true);
   });
 });

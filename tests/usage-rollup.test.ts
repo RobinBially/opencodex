@@ -19,6 +19,7 @@ import {
   ensureRollupCurrent,
   readRollupSnapshot,
   resetRollupForTests,
+  setFoldSegmentCapForTests,
   type RollupCommitRow,
   type RollupMeta,
 } from "../src/usage/rollup";
@@ -184,10 +185,14 @@ describe("usage rollup core", () => {
     await ensureRollupCurrent();
     const rows = parsedRollupLines();
     const commit = rows.at(-1)!;
+    const originalDigest = String(commit.payloadDigest);
     commit.payloadDigest = "0".repeat(64);
     writeFileSync(rollupPath(), `${rows.map(row => JSON.stringify(row)).join("\n")}\n`);
     expect(readRollupSnapshot()).toMatchObject({ cutlineOffset: 0, days: [] });
-    commit.payloadDigest = (commits()[0]?.payloadDigest ?? "0".repeat(64));
+    // Restore the ORIGINAL digest (re-reading commits() here would read the
+    // tampered file back and leave the digest broken, so the rowCount check
+    // below would never be exercised in isolation).
+    commit.payloadDigest = originalDigest;
     commit.rowCount = Number(commit.rowCount) + 1;
     writeFileSync(rollupPath(), `${rows.map(row => JSON.stringify(row)).join("\n")}\n`);
     expect(readRollupSnapshot()).toMatchObject({ cutlineOffset: 0, days: [] });
@@ -294,6 +299,53 @@ describe("usage rollup core", () => {
     expect(snapshot.cutlineOffset).toBe(Buffer.byteLength(rawLine(old)));
     expect(snapshot.days.reduce((sum, row) => sum + row.attemptCount, 0)).toBe(1);
     expect(readFileSync(usageLogPath(), "utf8").slice(snapshot.cutlineOffset)).toContain("old-after-boundary");
+  });
+
+  test("7. a complete malformed row does not stall the cutline; the fold advances past it", async () => {
+    const before = entry({ requestId: "before-junk", timestamp: FIXED_NOW - 12 * DAY_MS });
+    const after = entry({ requestId: "after-junk", timestamp: FIXED_NOW - 11 * DAY_MS });
+    writeFileSync(usageLogPath(), `${rawLine(before)}{not json}\n${rawLine(after)}`, { mode: 0o600 });
+
+    await ensureRollupCurrent();
+    const snapshot = readRollupSnapshot()!;
+    // The cutline covers all three complete rows (junk skipped like the parser does).
+    expect(snapshot.cutlineOffset).toBe(statSync(usageLogPath()).size);
+    expect(snapshot.days.reduce((sum, row) => sum + row.attemptCount, 0)).toBe(2);
+  });
+
+  test("8. the fold catches up a backlog in bounded segments, one commit per segment", async () => {
+    setFoldSegmentCapForTests(1); // every row closes a segment
+    try {
+      const entries = [
+        entry({ requestId: "seg-a", timestamp: FIXED_NOW - 14 * DAY_MS }),
+        entry({ requestId: "seg-b", timestamp: FIXED_NOW - 13 * DAY_MS }),
+        entry({ requestId: "seg-c", timestamp: FIXED_NOW - 12 * DAY_MS }),
+      ];
+      writeRaw(entries);
+      await ensureRollupCurrent();
+      expect(commits()).toHaveLength(3);
+      const snapshot = readRollupSnapshot()!;
+      expect(snapshot.cutlineOffset).toBe(statSync(usageLogPath()).size);
+      expect(snapshot.days.reduce((sum, row) => sum + row.attemptCount, 0)).toBe(3);
+      // Segments chain: each commit's seg is the previous commit's toOffset.
+      const chain = commits();
+      for (let i = 1; i < chain.length; i++) expect(chain[i]!.seg).toBe(chain[i - 1]!.toOffset);
+    } finally {
+      setFoldSegmentCapForTests(null);
+    }
+  });
+
+  test("9. a truncated-then-regrown raw log invalidates the snapshot at read time, before any fold", async () => {
+    const old = entry({ requestId: "will-vanish", timestamp: FIXED_NOW - 12 * DAY_MS });
+    writeRaw([old]);
+    await ensureRollupCurrent();
+    expect(readRollupSnapshot()).not.toBeNull();
+
+    // Rewrite the raw file to the SAME length with different bytes (regrow after
+    // truncation) without touching meta or the throttle: a reader must notice.
+    const replacement = entry({ requestId: "will-van1sh", timestamp: FIXED_NOW - 12 * DAY_MS });
+    writeFileSync(usageLogPath(), rawLine(replacement), { mode: 0o600 });
+    expect(readRollupSnapshot()).toBeNull();
   });
 
   test("rollup files are owned config state and mode 0600 on POSIX", async () => {

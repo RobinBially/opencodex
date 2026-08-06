@@ -51,6 +51,19 @@ export const ROLLUP_MIN_AGE_DAYS = 9;
 const ROLLUP_ATTEMPT_THROTTLE_MS = 10 * 60 * 1_000;
 const READ_CHUNK_BYTES = 1024 * 1024;
 const BOUNDARY_DIGEST_BYTES = 4 * 1024;
+/**
+ * Upper bound on the raw-byte span folded into ONE segment per iteration. The
+ * fold loop still catches up a larger backlog in a single call, but each
+ * iteration materializes at most this many bytes of parsed entries, so first
+ * fold over a multi-GB usage.jsonl is bounded-memory instead of loading the
+ * whole eligible prefix (review thread: unbounded prefix materialization).
+ */
+let foldSegmentCapBytes = 64 * 1024 * 1024;
+
+/** Test seam: shrink the per-segment fold cap so bounded-fold behavior is testable with small fixtures. */
+export function setFoldSegmentCapForTests(bytes: number | null): void {
+  foldSegmentCapBytes = bytes ?? 64 * 1024 * 1024;
+}
 
 export interface RollupMeta {
   version: 1;
@@ -429,7 +442,25 @@ export function readRollupSnapshot(): RollupSnapshot | null {
     if (!meta || !currentLineage || meta.version !== 1
       || meta.lineageKey !== currentLineage
       || meta.priceFingerprint !== currentRollupPriceFingerprint()) return null;
-    return parseRollup(currentLineage).snapshot;
+    const parsed = parseRollup(currentLineage);
+    // Read-time boundary validity (review threads: truncated/rewritten raw log
+    // within a throttle window must not serve a stale sidecar). The fold path
+    // performs the same check before appending; readers need it too because a
+    // truncate-then-regrow can happen entirely between folds.
+    const lastSegment = parsed.segments.at(-1);
+    if (lastSegment) {
+      let fd: number | undefined;
+      try {
+        fd = openSync(usageLogPath(), "r");
+        const rawSize = Number(fstatSync(fd).size);
+        if (rawSize < parsed.snapshot.cutlineOffset || !boundaryMatches(fd, lastSegment)) return null;
+      } catch {
+        return null;
+      } finally {
+        if (fd !== undefined) closeSync(fd);
+      }
+    }
+    return parsed.snapshot;
   } catch {
     return null;
   }
@@ -442,7 +473,7 @@ function cutoffDateKey(now: number): string {
   return localDateKey(cutoff.getTime());
 }
 
-function eligibleCutline(fd: number, size: number, fromOffset: number, now: number): number {
+async function eligibleCutline(fd: number, size: number, fromOffset: number, now: number): Promise<number> {
   const cutoff = cutoffDateKey(now);
   let pending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   let pendingStart = fromOffset;
@@ -456,22 +487,32 @@ function eligibleCutline(fd: number, size: number, fromOffset: number, now: numb
     for (;;) {
       const newline = pending.indexOf(0x0a, cursor);
       if (newline < 0) break;
-      const lineStart = pendingStart + cursor;
       const line = pending.subarray(cursor, newline).toString("utf8").replace(/\r$/, "");
       if (line.trim()) {
+        // A COMPLETE (newline-terminated) row that cannot carry usage data —
+        // unparseable JSON, a non-object, or an unusable timestamp — must not
+        // stall the cutline forever: the fold parse skips it identically, so
+        // advancing past it loses nothing. Only a usable timestamp at or past
+        // the cutoff stops eligibility (those rows are still too recent).
         let parsed: unknown;
-        try { parsed = JSON.parse(line); } catch { return lineStart; }
-        if (!isObject(parsed) || !usableTimestamp(parsed.timestamp)
-          || localDateKey(parsed.timestamp) >= cutoff) return lineStart;
+        try { parsed = JSON.parse(line); } catch { parsed = null; }
+        if (isObject(parsed) && usableTimestamp(parsed.timestamp)
+          && localDateKey(parsed.timestamp) >= cutoff) return pendingStart + cursor;
       }
       eligible = pendingStart + newline + 1;
       cursor = newline + 1;
+      // Segment cap: one fold segment materializes at most this raw span.
+      // The caller loops, so a large backlog still catches up — in bounded slices.
+      if (eligible - fromOffset >= foldSegmentCapBytes) return eligible;
     }
     if (cursor > 0) {
       pending = pending.subarray(cursor);
       pendingStart += cursor;
     }
     position += length;
+    // Yield between chunks so a first scan over a large existing log cannot
+    // monopolize the event loop (review thread: yield while locating the cutline).
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
   }
   return eligible;
 }
@@ -753,9 +794,13 @@ export async function foldUsagePrefix(): Promise<void> {
       rawFd = openSync(usageLogPath(), "r");
     }
     const size = Number(fstatSync(rawFd).size);
-    const fromOffset = parsed.snapshot.cutlineOffset;
-    const toOffset = eligibleCutline(rawFd, size, fromOffset, now);
-    if (toOffset > fromOffset) {
+    let fromOffset = parsed.snapshot.cutlineOffset;
+    // Segment loop: each iteration folds at most `foldSegmentCapBytes` of raw
+    // history (the cutline stops at the cap), so a large backlog catches up in
+    // bounded-memory slices instead of one whole-prefix materialization.
+    for (;;) {
+      const toOffset = await eligibleCutline(rawFd, size, fromOffset, now);
+      if (toOffset <= fromOffset) break;
       const entries = await parseUsageRange(rawFd, fromOffset, toOffset);
       const foldedAt = Date.now();
       const attemptId = `${foldedAt}-${randomBytes(8).toString("hex")}`;
@@ -780,6 +825,7 @@ export async function foldUsagePrefix(): Promise<void> {
       } finally {
         closeSync(rollupFd);
       }
+      fromOffset = toOffset;
     }
     writeMeta({
       version: 1,

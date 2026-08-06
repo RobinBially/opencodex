@@ -150,14 +150,16 @@ export function clearApiKeyUsageCacheForTests(): void {
  * `attributionSince`. Key management working matters more than usage numbers
  * being present, and the GUI already treats an absent field as "no data".
  */
-export async function readApiKeyUsageRollup(configuredIds: string[], maxReadBytes?: number): Promise<ApiKeyUsageSnapshot> {
+export async function readApiKeyUsageRollup(configuredIds: string[], maxReadBytes?: number, rollupEnabled = true): Promise<ApiKeyUsageSnapshot> {
   // JSON rather than a joined string: ids are only validated as non-empty
   // strings, so `["a\0b","c"]` and `["a","b\0c"]` join to the same value and one
   // config could be served the other's cached rollup.
-  const idsKey = JSON.stringify([configuredIds, maxReadBytes]);
+  const idsKey = JSON.stringify([configuredIds, maxReadBytes, rollupEnabled]);
   const now = Date.now();
   try {
-    const folded = readRollupSnapshot();
+    // Honor usageRollupEnabled the same way /api/usage does: a disabled rollup
+    // must not keep serving folded history from an orphaned sidecar.
+    const folded = rollupEnabled ? readRollupSnapshot() : null;
     const cutlineOffset = folded?.cutlineOffset ?? 0;
     const observedKey = `${usageLogRevisionKey(currentUsageLogRevision())}|${cutlineOffset}|${idsKey}`;
     if (rollupCache?.revisionKey === observedKey && now < rollupCache.expiresAt) {
