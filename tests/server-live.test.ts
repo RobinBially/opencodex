@@ -14,7 +14,12 @@ import {
   runStartupReadinessSync,
   type ReadinessGate,
 } from "../src/server/readiness";
-import { startServer } from "../src/server";
+import {
+  enqueueLiveSidebandPendingFrame,
+  exceedsLiveSidebandFrameByteLimit,
+  exceedsLiveSidebandPendingByteLimit,
+  startServer,
+} from "../src/server";
 import { beginShutdownDrain, isDraining, resetLifecycleDrainStateForTests } from "../src/server/lifecycle";
 import type { OcxConfig } from "../src/types";
 import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
@@ -555,6 +560,40 @@ test("sideband GET /v1/live/{callId} upgrades and relays bidirectionally to Chat
     await server.stop(true);
     await upstream.stop(true);
   }
+});
+
+test("sideband byte predicates accept exact limits and reject one byte over", () => {
+  expect(exceedsLiveSidebandFrameByteLimit(50 * 1024 * 1024)).toBe(false);
+  expect(exceedsLiveSidebandFrameByteLimit(50 * 1024 * 1024 + 1)).toBe(true);
+  expect(exceedsLiveSidebandPendingByteLimit(256 * 1024, 768 * 1024)).toBe(false);
+  expect(exceedsLiveSidebandPendingByteLimit(256 * 1024, 768 * 1024 + 1)).toBe(true);
+});
+
+test("sideband queue enforces aggregate bytes and frame count without retaining rejected frames", () => {
+  const byteBounded: { livePending: Array<string | Buffer>; livePendingBytes: number } = {
+    livePending: [],
+    livePendingBytes: 0,
+  };
+  const quarterMiB = Buffer.alloc(256 * 1024);
+  for (let i = 0; i < 4; i += 1) {
+    expect(enqueueLiveSidebandPendingFrame(byteBounded, quarterMiB)).toBe("queued");
+  }
+  expect(byteBounded.livePending).toHaveLength(4);
+  expect(byteBounded.livePendingBytes).toBe(1024 * 1024);
+  expect(enqueueLiveSidebandPendingFrame(byteBounded, Buffer.from([1]))).toBe("too-many-bytes");
+  expect(byteBounded.livePending).toHaveLength(4);
+  expect(byteBounded.livePendingBytes).toBe(1024 * 1024);
+
+  const countBounded: { livePending: Array<string | Buffer>; livePendingBytes: number } = {
+    livePending: [],
+    livePendingBytes: 0,
+  };
+  for (let i = 0; i < 32; i += 1) {
+    expect(enqueueLiveSidebandPendingFrame(countBounded, "x")).toBe("queued");
+  }
+  expect(enqueueLiveSidebandPendingFrame(countBounded, "x")).toBe("too-many-frames");
+  expect(countBounded.livePending).toHaveLength(32);
+  expect(countBounded.livePendingBytes).toBe(32);
 });
 
 test("buildLiveSidebandUpstreamWsUrl maps Frameless and Realtime join shapes", async () => {
