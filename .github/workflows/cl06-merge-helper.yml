@@ -50,11 +50,23 @@ jobs:
           path = Path('.github/workflows/ci.yml')
           text = path.read_text()
 
-          old_test = "run: bun test --isolate tests --path-ignore-patterns 'tests/api-storage-policy*.test.ts' --path-ignore-patterns 'tests/api-usage.test.ts' --shard=${{ matrix.shard }}/4"
-          new_test = "run: bun test --isolate tests --path-ignore-patterns 'tests/api-storage-policy*.test.ts' --path-ignore-patterns 'tests/api-storage.test.ts' --path-ignore-patterns 'tests/api-usage.test.ts' --shard=${{ matrix.shard }}/4"
-          if old_test not in text:
-              raise SystemExit('expected current-dev shard command not found')
-          text = text.replace(old_test, new_test, 1)
+          storage_policy = "--path-ignore-patterns 'tests/api-storage-policy*.test.ts'"
+          storage_api = "--path-ignore-patterns 'tests/api-storage.test.ts'"
+          usage_api = "--path-ignore-patterns 'tests/api-usage.test.ts'"
+          lines = text.splitlines()
+          matches = [
+              i for i, line in enumerate(lines)
+              if 'run: bun test --isolate tests' in line
+              and storage_policy in line
+              and usage_api in line
+              and '--shard=' in line
+          ]
+          if len(matches) != 1:
+              raise SystemExit(f'expected exactly one current-dev shard command, found {len(matches)}')
+          i = matches[0]
+          if storage_api not in lines[i]:
+              lines[i] = lines[i].replace(usage_api, f'{storage_api} {usage_api}', 1)
+          text = '\n'.join(lines) + '\n'
 
           old_storage = "            ./tests/api-storage-policy-run.test.ts \\\n            ./tests/api-storage-policy.test.ts"
           new_storage = "            ./tests/api-storage-policy-run.test.ts \\\n            ./tests/api-storage-policy.test.ts \\\n            ./tests/api-storage.test.ts"
