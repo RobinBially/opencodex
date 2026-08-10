@@ -19,7 +19,7 @@ jobs:
           ref: feat/cl-06-routing-profile-compatibility
           fetch-depth: 0
 
-      - name: Merge current dev and resolve only the known CI overlap
+      - name: Merge current dev while preserving the feature workflow
         shell: bash
         run: |
           set -euo pipefail
@@ -41,41 +41,11 @@ jobs:
               exit 1
             fi
 
-            # Current dev owns the evolving CI topology (including api-usage
-            # isolation). Reapply only the CL-06-discovered storage API isolate.
-            git checkout --theirs .github/workflows/ci.yml
-            python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('.github/workflows/ci.yml')
-          text = path.read_text()
-
-          storage_policy = "--path-ignore-patterns 'tests/api-storage-policy*.test.ts'"
-          storage_api = "--path-ignore-patterns 'tests/api-storage.test.ts'"
-          usage_api = "--path-ignore-patterns 'tests/api-usage.test.ts'"
-          lines = text.splitlines()
-          matches = [
-              i for i, line in enumerate(lines)
-              if 'run: bun test --isolate tests' in line
-              and storage_policy in line
-              and usage_api in line
-              and '--shard=' in line
-          ]
-          if len(matches) != 1:
-              raise SystemExit(f'expected exactly one current-dev shard command, found {len(matches)}')
-          i = matches[0]
-          if storage_api not in lines[i]:
-              lines[i] = lines[i].replace(usage_api, f'{storage_api} {usage_api}', 1)
-          text = '\n'.join(lines) + '\n'
-
-          old_storage = "            ./tests/api-storage-policy-run.test.ts \\\n            ./tests/api-storage-policy.test.ts"
-          new_storage = "            ./tests/api-storage-policy-run.test.ts \\\n            ./tests/api-storage-policy.test.ts \\\n            ./tests/api-storage.test.ts"
-          if old_storage not in text:
-              raise SystemExit('expected current-dev storage job list not found')
-          text = text.replace(old_storage, new_storage, 1)
-
-          path.write_text(text)
-          PY
+            # The workflow-file write will be applied separately through the
+            # GitHub connector, whose credential can update workflow files.
+            # Keep the feature workflow unchanged in this merge commit so the
+            # Actions token can push the otherwise mechanical dev merge.
+            git checkout --ours .github/workflows/ci.yml
             git add .github/workflows/ci.yml
           elif [ "$merge_status" -ne 0 ]; then
             echo "::error::git merge failed without reported conflicts"
