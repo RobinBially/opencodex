@@ -18,6 +18,7 @@ import {
   enqueueLiveSidebandPendingFrame,
   exceedsLiveSidebandFrameByteLimit,
   exceedsLiveSidebandPendingByteLimit,
+  MAX_WS_FRAME_BYTES,
   startServer,
 } from "../src/server";
 import { beginShutdownDrain, isDraining, resetLifecycleDrainStateForTests } from "../src/server/lifecycle";
@@ -478,7 +479,7 @@ test("a routed pool account's token overrides the caller bearer on the live rela
   }
 });
 
-test("sideband GET /v1/live/{callId} upgrades and relays bidirectionally to ChatGPT backend", async () => {
+test("sideband GET /v1/live/{callId} relays the exact frame ceiling bidirectionally", async () => {
   const seenPaths: string[] = [];
   const seenUpgradeHeaders: Headers[] = [];
   const upstream = Bun.serve({
@@ -494,8 +495,9 @@ test("sideband GET /v1/live/{callId} upgrades and relays bidirectionally to Chat
       return new Response("not found", { status: 404 });
     },
     websocket: {
+      maxPayloadLength: MAX_WS_FRAME_BYTES,
       message(ws, message) {
-        ws.send(`echo:${typeof message === "string" ? message : message.toString()}`);
+        ws.send(typeof message === "string" ? `echo:${message}` : `bytes:${message.byteLength}`);
       },
     },
   });
@@ -530,13 +532,20 @@ test("sideband GET /v1/live/{callId} upgrades and relays bidirectionally to Chat
     } as unknown as string[]);
 
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("sideband timeout")), 5_000);
+      const timer = setTimeout(() => reject(new Error("sideband timeout")), 15_000);
+      let sawPing = false;
       client.addEventListener("open", () => {
         client.send("ping-sideband");
       });
       client.addEventListener("message", (event) => {
         try {
-          expect(String(event.data)).toBe("echo:ping-sideband");
+          if (!sawPing) {
+            expect(String(event.data)).toBe("echo:ping-sideband");
+            sawPing = true;
+            client.send(Buffer.alloc(MAX_WS_FRAME_BYTES));
+            return;
+          }
+          expect(String(event.data)).toBe(`bytes:${MAX_WS_FRAME_BYTES}`);
           expect(seenPaths).toContain("/v1/live/rtc_sideband");
           expect(seenUpgradeHeaders).toHaveLength(1);
           expect(seenUpgradeHeaders[0].get("openai-alpha")).toBe("quicksilver=v2");
