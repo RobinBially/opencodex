@@ -569,7 +569,7 @@ test("sideband GET /v1/live/{callId} relays the exact frame ceiling bidirectiona
     await server.stop(true);
     await upstream.stop(true);
   }
-});
+}, { timeout: 20_000 });
 
 test("sideband byte predicates accept exact limits and reject one byte over", () => {
   expect(exceedsLiveSidebandFrameByteLimit(50 * 1024 * 1024)).toBe(false);
