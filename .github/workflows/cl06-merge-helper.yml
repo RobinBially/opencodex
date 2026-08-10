@@ -1,0 +1,77 @@
+name: CL-06 merge helper
+
+on:
+  push:
+    branches:
+      - tmp/cl06-merge-helper
+
+permissions:
+  contents: write
+
+jobs:
+  merge-dev:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout CL-06 branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: feat/cl-06-routing-profile-compatibility
+          fetch-depth: 0
+
+      - name: Merge current dev and resolve only the known CI overlap
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin dev
+
+          set +e
+          git merge --no-ff --no-commit origin/dev
+          merge_status=$?
+          set -e
+
+          conflicts="$(git diff --name-only --diff-filter=U)"
+          if [ -n "$conflicts" ]; then
+            printf 'Conflicts:\n%s\n' "$conflicts"
+            unexpected="$(printf '%s\n' "$conflicts" | grep -v '^\.github/workflows/ci\.yml$' || true)"
+            if [ -n "$unexpected" ]; then
+              echo "::error::Unexpected merge conflicts; refusing to guess"
+              exit 1
+            fi
+
+            # Current dev owns the evolving CI topology (including api-usage
+            # isolation). Reapply only the CL-06-discovered storage API isolate.
+            git checkout --theirs .github/workflows/ci.yml
+            python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/ci.yml')
+          text = path.read_text()
+
+          old_test = "run: bun test --isolate tests --path-ignore-patterns 'tests/api-storage-policy*.test.ts' --path-ignore-patterns 'tests/api-usage.test.ts' --shard=${{ matrix.shard }}/4"
+          new_test = "run: bun test --isolate tests --path-ignore-patterns 'tests/api-storage-policy*.test.ts' --path-ignore-patterns 'tests/api-storage.test.ts' --path-ignore-patterns 'tests/api-usage.test.ts' --shard=${{ matrix.shard }}/4"
+          if old_test not in text:
+              raise SystemExit('expected current-dev shard command not found')
+          text = text.replace(old_test, new_test, 1)
+
+          old_storage = "            ./tests/api-storage-policy-run.test.ts \\\n            ./tests/api-storage-policy.test.ts"
+          new_storage = "            ./tests/api-storage-policy-run.test.ts \\\n            ./tests/api-storage-policy.test.ts \\\n            ./tests/api-storage.test.ts"
+          if old_storage not in text:
+              raise SystemExit('expected current-dev storage job list not found')
+          text = text.replace(old_storage, new_storage, 1)
+
+          path.write_text(text)
+          PY
+            git add .github/workflows/ci.yml
+          elif [ "$merge_status" -ne 0 ]; then
+            echo "::error::git merge failed without reported conflicts"
+            exit "$merge_status"
+          fi
+
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git diff --check
+          git status --short
+          git commit -m "merge dev into CL-06 branch"
+          git push origin HEAD:feat/cl-06-routing-profile-compatibility
