@@ -64,6 +64,13 @@ of the HTTP retry loop.
   ChatGPT account id, and the OpenAI beta/originator/session headers. This is the ChatGPT-login path
   that also powers the [sidecars](/guides/sidecars/).
 
+For providers that declare `requiresAdjacentResponsesToolResults` (currently DeepSeek), the adapter
+normalizes an unambiguous Responses tool history so one parallel-tool-call assistant turn stays
+together as a call batch followed by its matching results in call order. Hook-injected context that
+interleaved the batch moves immediately after it rather than being dropped. Histories that are
+missing, duplicate, or out-of-order (backward) are ambiguous and are forwarded unchanged — they are
+left for the upstream to reject rather than being guessed.
+
 ## `anthropic`
 
 **Targets:** Anthropic **Messages** (`/v1/messages`).

@@ -99,6 +99,10 @@ function deepseekProvider(): OcxProviderConfig {
   return { ...providerConfigSeed(getProviderRegistryEntry("deepseek")!), apiKey: "sk-test" };
 }
 
+function deepseekReasoningProvider(): OcxProviderConfig {
+  return { ...deepseekProvider(), preserveResponsesReasoningContent: true };
+}
+
 describe("DeepSeek wire selection is scoped to the inbound protocol", () => {
   test("a Responses inbound rides the native Responses wire", () => {
     const resolved = resolveWireProtocolOverride("deepseek", MODEL, deepseekProvider(), "responses");
@@ -833,6 +837,109 @@ describe("stateless Responses upstreams get no stateful parameters", () => {
     ];
 
     const body = buildBody(provider, { input }) as { input: unknown[] };
+    expect(body.input).toEqual(input);
+  });
+
+  test("DeepSeek keeps a parallel call batch attached to one reasoning turn", () => {
+    const reasoning = {
+      type: "reasoning",
+      content: [{ type: "reasoning_text", text: "read both files" }],
+      summary: [],
+    };
+    const callA = { type: "function_call", call_id: "call_a", name: "read_file", arguments: "{}" };
+    const callB = { type: "function_call", call_id: "call_b", name: "read_file", arguments: "{}" };
+    const outputA = { type: "function_call_output", call_id: "call_a", output: "A" };
+    const outputB = { type: "function_call_output", call_id: "call_b", output: "B" };
+
+    const body = buildBody(deepseekReasoningProvider(), {
+      input: [reasoning, callA, callB, outputA, outputB],
+    }) as { input: unknown[] };
+    expect(body.input).toEqual([reasoning, callA, callB, outputA, outputB]);
+  });
+
+  test("DeepSeek moves injected context after the complete parallel call and result batches", () => {
+    const reasoning = {
+      type: "reasoning",
+      content: [{ type: "reasoning_text", text: "read both files" }],
+      summary: [],
+    };
+    const callA = { type: "function_call", call_id: "call_a", name: "read_file", arguments: "{}" };
+    const callB = { type: "function_call", call_id: "call_b", name: "read_file", arguments: "{}" };
+    const outputA = { type: "function_call_output", call_id: "call_a", output: "A" };
+    const outputB = { type: "function_call_output", call_id: "call_b", output: "B" };
+    const injected = {
+      type: "message",
+      role: "developer",
+      content: [{ type: "input_text", text: "[planning-with-files] ACTIVE PLAN" }],
+    };
+    const tail = { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] };
+
+    const body = buildBody(deepseekReasoningProvider(), {
+      input: [reasoning, callA, injected, callB, outputA, outputB, tail],
+    }) as { input: unknown[] };
+    expect(body.input).toEqual([reasoning, callA, callB, outputA, outputB, injected, tail]);
+  });
+
+  test("DeepSeek keeps sequential reasoning and tool rounds separate", () => {
+    const reasoningA = {
+      type: "reasoning",
+      content: [{ type: "reasoning_text", text: "first" }],
+      summary: [],
+    };
+    const reasoningB = {
+      type: "reasoning",
+      content: [{ type: "reasoning_text", text: "second" }],
+      summary: [],
+    };
+    const callA = { type: "function_call", call_id: "call_a", name: "read_file", arguments: "{}" };
+    const callB = { type: "function_call", call_id: "call_b", name: "read_file", arguments: "{}" };
+    const outputA = { type: "function_call_output", call_id: "call_a", output: "A" };
+    const outputB = { type: "function_call_output", call_id: "call_b", output: "B" };
+
+    const body = buildBody(deepseekReasoningProvider(), {
+      input: [reasoningA, callA, outputA, reasoningB, callB, outputB],
+    }) as { input: unknown[] };
+    expect(body.input).toEqual([reasoningA, callA, outputA, reasoningB, callB, outputB]);
+  });
+
+  test("DeepSeek leaves a history with a missing call result unchanged (fail closed)", () => {
+    const callA = { type: "function_call", call_id: "call_a", name: "read_file", arguments: "{}" };
+    const callB = { type: "function_call", call_id: "call_b", name: "read_file", arguments: "{}" };
+    const injected = {
+      type: "message",
+      role: "developer",
+      content: [{ type: "input_text", text: "[planning-with-files] ACTIVE PLAN" }],
+    };
+    const outputB = { type: "function_call_output", call_id: "call_b", output: "B" };
+    const tail = { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] };
+
+    const input = [callA, callB, injected, outputB, tail];
+    const body = buildBody(deepseekReasoningProvider(), { input }) as { input: unknown[] };
+    expect(body.input).toEqual(input);
+  });
+
+  test("DeepSeek leaves a backward call/result pair unchanged (fail closed)", () => {
+    const callA = { type: "function_call", call_id: "call_a", name: "read_file", arguments: "{}" };
+    const outputA = { type: "function_call_output", call_id: "call_a", output: "A" };
+    const injected = {
+      type: "message",
+      role: "developer",
+      content: [{ type: "input_text", text: "[planning-with-files] ACTIVE PLAN" }],
+    };
+
+    // outputA appears before its own callA, which is ambiguous.
+    const input = [outputA, injected, callA];
+    const body = buildBody(deepseekReasoningProvider(), { input }) as { input: unknown[] };
+    expect(body.input).toEqual(input);
+  });
+
+  test("DeepSeek leaves a duplicate call/result history unchanged (fail closed)", () => {
+    const callA1 = { type: "function_call", call_id: "call_a", name: "read_file", arguments: "{}" };
+    const callA2 = { type: "function_call", call_id: "call_a", name: "read_file", arguments: "{}" };
+    const outputA = { type: "function_call_output", call_id: "call_a", output: "A" };
+
+    const input = [callA1, callA2, outputA];
+    const body = buildBody(deepseekReasoningProvider(), { input }) as { input: unknown[] };
     expect(body.input).toEqual(input);
   });
 

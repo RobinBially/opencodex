@@ -262,6 +262,13 @@ as `response.incomplete`, never synthetic success. The repair shares the per-tur
 budget, preserves backpressure, and composes ahead of item-id/snapshot rewrites so HTTP/SSE and
 WebSocket clients observe the same canonical lifecycle.
 
+DeepSeek also opts into a provider-scoped Responses history normalization
+(`requiresAdjacentResponsesToolResults`). Only an unambiguous call/output batch is normalized:
+calls emitted before the first matched result stay together as one assistant batch, followed by
+their matching results in call order, and any intervening hook-injected context moves after the
+batch. Missing, duplicate, or backward (out-of-order) call/result histories are ambiguous and are
+left unchanged so the strict upstream rejects them rather than guessing.
+
 `ws-bridge.ts` preserves upstream `failed` and `incomplete` status values in the final WebSocket
 frame rather than always emitting `response.completed`. If the response status is `failed`, a
 `response.failed` frame is sent; otherwise `response.completed` carries through the original status.
