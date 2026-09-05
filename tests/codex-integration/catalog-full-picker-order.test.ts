@@ -1,6 +1,6 @@
 import { routedSlug } from "../../src/providers/slug-codec";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, saveConfig } from "../../src/config";
@@ -292,7 +292,7 @@ describe("picker ordering through production catalog writers", () => {
     expect(saved.subagentModels).toEqual(requestedRoster);
     expect(next.subagentModels).toEqual(requestedRoster);
     if (degraded) {
-      // No cached/static rows: the caller must preserve the catalog already on disk.
+      // Preserve disk rows without a discovery cache; built-in metadata augmentation still runs.
       clearModelCache("opencode-go");
       markModelsFetchFailure("opencode-go");
     }
@@ -360,11 +360,30 @@ describe("picker ordering through production catalog writers", () => {
       expect(actual).toEqual(expected);
       expect(roster(actual, control.subagentModels!)).toEqual(expectedRoster);
 
-      malformed.providers["opencode-go"]!.liveModels = true;
-      malformed.providers["opencode-go"]!.models = [];
-      const retained = await writeCatalog(writer, malformed, true);
-      expect(retained).toEqual(expected);
-      expect(roster(retained, control.subagentModels!)).toEqual(expectedRoster);
+      const priorCatalog = readFileSync(catalogPath);
+      const cachePath = join(codexHome, "models_cache.json");
+      const priorCache = existsSync(cachePath) ? readFileSync(cachePath) : null;
+      const restoreSeed = () => {
+        writeFileSync(catalogPath, priorCatalog);
+        if (priorCache === null) rmSync(cachePath, { force: true });
+        else writeFileSync(cachePath, priorCache);
+      };
+      const retainedControl = config(control.subagentModels, filtered);
+      const retainedMalformed = Object.assign(config(control.subagentModels), { modelPickerOrder: input });
+      for (const candidate of [retainedControl, retainedMalformed]) {
+        candidate.providers["opencode-go"]!.liveModels = true;
+        candidate.providers["opencode-go"]!.models = [];
+      }
+      // Both sides activate identical Go metadata augmentation and failure/cooldown state.
+      // Only the malformed order differs; a static healthy catalog is not this counterfactual.
+      restoreSeed();
+      const expectedRetained = await writeCatalog(writer, retainedControl, true);
+      const expectedRetainedRoster = roster(expectedRetained, control.subagentModels!);
+      expect(expectedRetainedRoster).toEqual(expectedRoster);
+      restoreSeed();
+      const retained = await writeCatalog(writer, retainedMalformed, true);
+      expect(retained).toEqual(expectedRetained);
+      expect(roster(retained, control.subagentModels!)).toEqual(expectedRetainedRoster);
     }, 30_000);
 
     test(`${writer} applies full display order without changing five eligible Go candidates`, async () => {
