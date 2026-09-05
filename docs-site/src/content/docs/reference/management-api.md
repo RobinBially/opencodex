@@ -241,8 +241,11 @@ The provider context-cap response includes `caps` (active limits) and `values` (
 values, retained while disabled). Enabling a provider without `value` restores its selection,
 or uses the global `contextCapValue` on first enable. This also applies to OpenAI: the switch
 does not select a special 922k mode. An active cap bounds every native window; models with a
-supported long-context window may expand only up to their own supported ceiling. Explicit
-“set all” replaces provider selections with the global value. Turning a cap off does not
+supported long-context window may expand only up to their own supported ceiling.
+Updating the global value with `{ "value": 600000, "setAll": true }` changes only enabled
+provider caps; disabled providers keep their remembered selections when later enabled.
+In contrast, `{ "setAll": true }` without `value` enables every configured provider at the
+current global value, replacing their remembered selections. Turning a cap off does not
 activate its remembered value or erase the selection.
 
 
