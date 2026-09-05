@@ -425,6 +425,51 @@ describe("GET /api/client-config", () => {
     expect(body.modelCount).toBe(enabled.modelCount - 1);
   }, 15_000);
 
+  test("manual OpenAI replacement, disable, and removal reach the loader and exported selectors", async () => {
+    const config = baseConfig({
+      // Test base-selector identity here; the Fast projection has its own regressions below.
+      fastRows: false,
+      providers: {
+        ...baseConfig().providers,
+        openai: {
+          adapter: "openai-responses", authMode: "forward", liveModels: false,
+          baseUrl: "https://chatgpt.com/backend-api/codex", models: [],
+        },
+      },
+    });
+    const manual = [{ id: "manual-gpt", provider: "openai", modelId: "gpt-5.5", contextWindow: 128_000 }];
+    const stages = [
+      { customModels: [], disabledModels: [], selectors: ["gpt-5.5"], native: true },
+      { customModels: manual, disabledModels: [], selectors: ["openai/gpt-5.5"], native: false },
+      { customModels: manual, disabledModels: ["openai/gpt-5.5"], selectors: [], native: false },
+      // Removing the manual row restores the bare route even while its routed disable key remains.
+      { customModels: [], disabledModels: ["openai/gpt-5.5"], selectors: ["gpt-5.5"], native: true },
+    ];
+    for (const stage of stages) {
+      config.customModels = stage.customModels;
+      config.disabledModels = stage.disabledModels;
+      const rows = await loadExportModels(config);
+      const matchingRows = rows.filter(row => row.provider === "openai" && row.id === "gpt-5.5");
+      expect(matchingRows.map(row => row.namespaced)).toEqual(stage.selectors);
+      if (stage.selectors.length > 0) {
+        expect(matchingRows[0]!.native === true).toBe(stage.native);
+        if (!stage.native) expect(matchingRows[0]!.contextWindow).toBe(128_000);
+      }
+      const response = await clientConfigApi(config, "?client=pi");
+      expect(response.status).toBe(200);
+      const body = await response.json() as ClientConfigEnvelope;
+      const models = (body.config as PiGeneratedConfig).providers[OPENCODE_PROVIDER_ID].models;
+      // An array export exposes duplicates that a keyed document could silently overwrite.
+      expect(models.filter(model => model.id === "gpt-5.5" || model.id === "openai/gpt-5.5")
+        .map(model => model.id)).toEqual(stage.selectors);
+      if (stage.selectors[0] === "openai/gpt-5.5") {
+        expect(models.find(model => model.id === "openai/gpt-5.5")?.contextWindow).toBe(128_000);
+      }
+      expect(models.filter(model => model.id === "a/m1")).toHaveLength(1);
+      expect(body.modelCount).toBe(models.length);
+    }
+  }, 15_000);
+
   test("model order and dedupe are stable across repeated calls", async () => {
     const config = baseConfig();
     const first = await (await clientConfigApi(config, "?client=opencode")).json() as ClientConfigEnvelope;

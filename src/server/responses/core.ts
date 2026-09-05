@@ -3491,8 +3491,12 @@ async function handleResponsesInner(
 
   // OAuth providers: swap in a fresh access token (auto-refreshed) as the Bearer key, so the
   // existing openai-chat / anthropic adapters authenticate with no change.
-  const isOAuth401ReplayProvider = (route.providerName === "xai" || route.providerName === "github-copilot" || route.providerName === "kiro")
-    && route.provider.authMode === "oauth";
+  const isOAuth401ReplayProvider = (
+    route.providerName === "xai"
+    || route.providerName === "github-copilot"
+    || route.providerName === "kiro"
+    || route.providerName === "google-antigravity"
+  ) && route.provider.authMode === "oauth";
   let sentOAuthSnapshot: OAuthAccessSnapshot | undefined;
   let replayOAuthCredentialSnapshot: Pick<OAuthAccessSnapshot, "accountId" | "generation"> | undefined;
   let anthropicPoolAccountId: string | null = null;
@@ -4565,6 +4569,11 @@ async function handleResponsesInner(
         releaseCodexAuthContextProbeLease(authCtx);
         return formatErrorResponse(401, "authentication_error", publicOAuthAuthenticationErrorMessage(err));
       }
+      if (route.provider.googleMode === "cloud-code-assist" && !refreshed.projectId) {
+        upstream.abort();
+        releaseCodexAuthContextProbeLease(authCtx);
+        return formatErrorResponse(401, "authentication_error", publicOAuthAuthenticationErrorMessage(new Error("Cloud Code Assist project is required")));
+      }
       sentOAuthSnapshot = refreshed;
       replayOAuthCredentialSnapshot = {
         accountId: refreshed.accountId,
@@ -4575,7 +4584,11 @@ async function handleResponsesInner(
       }
       const refreshedProvider = resolveProviderTransport(
         route.providerName,
-        { ...route.provider, apiKey: refreshed.accessToken },
+        {
+          ...route.provider,
+          apiKey: refreshed.accessToken,
+          ...(refreshed.projectId ? { project: refreshed.projectId } : {}),
+        },
         parsed.options.promptCacheKey,
         route.providerName === "github-copilot"
           ? resolveCopilotApiBaseUrl(refreshed.apiBaseUrl)
@@ -6363,6 +6376,10 @@ async function handleResponsesInner(
           cleanupUpstreamAbort();
           return formatErrorResponse(401, "authentication_error", publicOAuthAuthenticationErrorMessage(err));
         }
+        if (route.provider.googleMode === "cloud-code-assist" && !refreshed.projectId) {
+          cleanupUpstreamAbort();
+          return formatErrorResponse(401, "authentication_error", publicOAuthAuthenticationErrorMessage(new Error("Cloud Code Assist project is required")));
+        }
         sentOAuthSnapshot = refreshed;
         replayOAuthCredentialSnapshot = {
           accountId: refreshed.accountId,
@@ -6373,7 +6390,11 @@ async function handleResponsesInner(
         }
         const refreshedProvider = resolveProviderTransport(
           route.providerName,
-          { ...route.provider, apiKey: refreshed.accessToken },
+          {
+            ...route.provider,
+            apiKey: refreshed.accessToken,
+            ...(refreshed.projectId ? { project: refreshed.projectId } : {}),
+          },
           parsed.options.promptCacheKey,
           route.providerName === "github-copilot"
             ? resolveCopilotApiBaseUrl(refreshed.apiBaseUrl)

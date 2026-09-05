@@ -36,6 +36,10 @@ Status and mutation must use the same classifier. A special case added only to a
 would be misleading because refresh or disable could still reject the same file; a special case
 added only to a writer would let a mutation bypass the state users saw.
 
+TOML temporal scalars cannot survive the JSON-cloned merge representation with their types
+intact. The common parser refuses documents containing them before either status or mutation
+proceeds, including nested arrays and inline tables. Quoted date strings remain supported.
+
 ## Fast model selectors
 
 The serving proxy resolves `fastRowAvailable` on every management model row, including its

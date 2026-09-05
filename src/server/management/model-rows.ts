@@ -169,7 +169,11 @@ export async function listManagementModelRows(
       ...(contextCap !== undefined ? { contextCap, contextCapped: m.contextCapped === true } : {}),
     };
   }).filter((row): row is ManagementModelRow => row !== null);
-  const rows = [...native, ...dedupedRouted, ...visibleCustomModels];
+  // Manual OpenAI rows retain their routed selector but replace the bare dashboard row.
+  // Account-qualified rows remain distinct, explicitly selected routes.
+  const visibleNative = native.filter(model => model.id.includes("/")
+    || !customNamespaced.has(routedSlug(model.provider, model.id)));
+  const rows = [...visibleNative, ...dedupedRouted, ...visibleCustomModels];
   // Include disabled rows and configured aliases before the export visibility filter:
   // a hidden real `x--fast` must never become a synthetic selector for another model.
   const knownIds = config.fastRows === false ? new Set<string>() : knownEffortRowIds(config);
