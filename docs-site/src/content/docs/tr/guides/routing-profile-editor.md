@@ -58,6 +58,7 @@ bu nedenle etkin üst sunucu adresine göre değerlendirilir. Adres sınıfland�
 adayın uygunluğunu profilin `unknownEvidence.capability` ayarı belirler.
 Çözümlenemeyen geçersiz sağlayıcı yapılandırmaları, bilinmeyen yeteneklere izin
 verilse bile `route-unavailable` ile her zaman dışlanır.
+Eksik veya devre dışı sağlayıcılar da puanlama öncesinde `route-unavailable` ile dışlanır.
 
 Kaydedilmiş bir profili seçin ve bağlam penceresi boyutu, araç kullanımı, görsel
 girişi veya yapılandırılmış çıktı gibi istek kanıtları eklemek için **Deneme

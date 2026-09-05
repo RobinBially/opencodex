@@ -44,6 +44,7 @@ therefore use the effective upstream address. If that address cannot be classifi
 the profile's `unknownEvidence.capability` setting decides eligibility.
 An invalid provider configuration that cannot be resolved is always excluded with
 `route-unavailable`, even when unknown capabilities are allowed.
+Missing or disabled providers are also excluded with `route-unavailable` before scoring.
 
 Select a saved profile and use **Dry-run evaluation** to add request evidence such as context-window size, tool use, image input, or structured output. Dry-run evaluates eligibility and scoring but never sends an upstream model request.
 

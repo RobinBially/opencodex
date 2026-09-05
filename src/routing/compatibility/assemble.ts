@@ -54,7 +54,7 @@ export function assemblePolicyCandidateEvidence(
     const compatibility = compatibilityByCandidate?.get(key);
     const provider = config.providers[candidate.provider];
     let routed: OcxProviderConfig | undefined;
-    let routeResolutionFailed = false;
+    let routeResolutionFailed = !provider || provider.disabled === true;
     if (provider && provider.disabled !== true) {
       try {
         routed = options.routedProviderConfig(candidate.provider, provider);
