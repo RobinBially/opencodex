@@ -14,6 +14,8 @@ Codex 的 models-manager 按 `priority` 升序排列選擇器中可見的目錄�
 
 因此，opencodex 透過分配更低的 priority 控制置頂位置，而不依賴陣列位置。相關 priority 如下：
 
+以下優先級表與範例適用於未啟用完整選擇器排序的情況。
+
 | 目錄條目 | Priority | 來源 |
 | --- | ---: | --- |
 | `subagentModels[i]` | `i`（`0` 至 `4`） | `src/codex/catalog/sync.ts` 中的 featured rank map |
@@ -92,10 +94,34 @@ subagentModels = [
 
 ## 更改順序
 
-自訂開頭模型順序的唯一受支援方式是重新排列 `subagentModels`。你可以在儀表板的
+要調整 `spawn_agent` 候選模型的順序，請重新排列 `subagentModels`。你可以在儀表板的
 **Sub-agents** 頁面或 opencodex 設定中修改它。該列表最多接受五個模型，其陣列順序有實際意義。
 
-目前 `OcxConfig` 中沒有通用的 `modelOrder`、`providerOrder` 或 priority map 設定。受支援的排序
-欄位是 `subagentModels`（`src/types.ts:238-246`）；`disabledModels` 和各 provider 的
-`selectedModels` 都是可見性欄位（`src/types.ts:276-282`、`src/types.ts:439-446`）。因此，要更改
-選擇器其餘部分的順序，需要修改程式碼行為，而不是調整設定。
+`modelPickerOrder` 只控制選擇器的顯示順序。如果列表只有路由 ID `<provider>/<model>`，
+其中未置頂的列會按列表順序進入獨立的顯示區間（`1000 + i`）。未列出的路由列保留原有優先級，
+因此仍排在該區間之前。同時列在 `subagentModels` 中的列保留置頂優先級，原生列也維持原有位置。
+需要控制相對順序的路由列都應列入列表。
+
+要對整個選擇器排序，請加入至少一個不含 `/` 的裸目錄 ID，例如 `gpt-5.6-sol`。
+空字串或只有空白的項目不會啟用此模式。
+
+```json
+{
+  "modelPickerOrder": ["gpt-5.6-sol", "opencode-go/glm-5.3"]
+}
+```
+
+列出的項目按陣列順序排在最前面，未列出的項目隨後按原有優先級排列。比對使用精確的目錄 ID：
+`gpt-5.6-sol` 和 `openai/gpt-5.6-sol` 是不同的列。同一路由 ID 的原始寫法和編碼寫法也可比對，
+但精確比對優先於等價比對。空項目和只有空白的項目會被忽略。帳號限定列必須使用包含 selector 的完整 ID。
+
+### 遷移提醒：現有列表中的原生 ID
+
+以前 `modelPickerOrder` 中的裸原生 ID 會被忽略。現在，現有列表只要包含這類 ID，就會啟用
+整個選擇器的排序，包括置頂列。要保留以前只調整路由列的行為，請移除裸 ID。
+未設定、空列表、只有空白項目的列表以及只有路由 ID 的列表都保留原有行為。
+
+`modelPickerOrder` 不會改變 `spawn_agent` 的五個候選項及其選擇優先級。它只改變 Codex 選擇器中
+用於顯示的 `priority`；opencodex 會保留每個移動列的原有優先級，供子代理選擇使用。
+`disabledModels` 和各供應商的 `selectedModels` 仍是可見性欄位。沒有獨立的 `modelOrder`、
+`providerOrder` 或優先級對應表設定。

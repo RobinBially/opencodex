@@ -20,6 +20,8 @@ priority 为 `i * N + j` 的 selector 行，其中 `j` 是从 0 开始的 select
 
 没有 selector 时的相关 priority 如下：
 
+以下优先级表和示例适用于未开启完整选择器排序的情况。
+
 | 目录条目 | Priority | 来源 |
 | --- | ---: | --- |
 | `subagentModels[i]` | `i`（`0` 至 `4`） | `src/codex/catalog/sync.ts` 中的 featured rank map |
@@ -106,6 +108,31 @@ subagentModels = [
 id 请勿超过五个。存在账户 selector 时，一个裸原生选项可能展开为多个 selector-qualified 行，因此
 已配置的选项与公布的行不一定一一对应。
 
-目前 `OcxConfig` 中没有通用的 `modelOrder`、`providerOrder` 或 priority map 设置。受支持的排序
-字段是 `subagentModels`；`disabledModels` 和各 provider 的 `selectedModels` 都是可见性字段。
-因此，要更改选择器其余部分的顺序，需要修改代码行为，而不是调整配置。
+`modelPickerOrder` 只控制选择器的显示顺序。如果列表只有路由 ID `<provider>/<model>`，
+其中未置顶的行会按列表顺序进入独立的显示区间（`1000 + i`）。未列出的路由行保留原有优先级，
+因此仍排在该区间之前。同时列在 `subagentModels` 中的行保留置顶优先级，原生行也保持原有位置。
+需要控制相对顺序的路由行都应列入列表。
+
+要对整个选择器排序，请加入至少一个不含 `/` 的裸目录 ID，例如 `gpt-5.6-sol`。
+空字符串或只有空白的条目不会启用此模式。
+
+```json
+{
+  "modelPickerOrder": ["gpt-5.6-sol", "opencode-go/glm-5.3"]
+}
+```
+
+列出的行按数组顺序排在最前面，未列出的行随后按原有优先级排列。匹配使用精确的目录 ID：
+`gpt-5.6-sol` 和 `openai/gpt-5.6-sol` 是不同的行。同一路由 ID 的原始写法和编码写法也可匹配，
+但精确匹配优先于等价匹配。空条目和只有空白的条目会被忽略。账户限定行必须使用包含 selector 的完整 ID。
+
+### 迁移提醒：现有列表中的原生 ID
+
+以前 `modelPickerOrder` 中的裸原生 ID 会被忽略。现在，现有列表只要包含这样的 ID，就会启用
+整个选择器的排序，包括置顶行。要保持以前只调整路由行的行为，请移除裸 ID。
+未设置、空列表、只有空白条目的列表以及只有路由 ID 的列表都保留原有行为。
+
+`modelPickerOrder` 不会改变 `spawn_agent` 的五个候选项及其选择优先级。它只改变 Codex 选择器中
+用于显示的 `priority`；opencodex 会保留每个移动行的原有优先级，供子代理选择使用。
+`disabledModels` 和各提供商的 `selectedModels` 仍是可见性字段。没有独立的 `modelOrder`、
+`providerOrder` 或优先级映射设置。

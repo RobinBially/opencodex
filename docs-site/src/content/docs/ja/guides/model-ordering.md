@@ -22,6 +22,8 @@ account-qualified native id にはその selector の `i * N + j` が使用さ�
 
 selector がない場合の priority は次のとおりです。
 
+以下の優先順位表と例は、ピッカー全体の並び替えを有効にしていない場合のものです。
+
 | カタログ項目 | Priority | 根拠 |
  --- | ---: | --- |
 | `subagentModels[i]` | `i`(`0` から `4`) | `src/codex/catalog/sync.ts` の featured rank map |
@@ -112,6 +114,34 @@ account selector がある場合、5 項目の制限は bare native の選択が
 場合は 1 つの bare native が複数の selector-qualified 行に展開されるため、設定した選択肢と公開
 される行は必ずしも一対一ではありません。
 
-現在 `OcxConfig` には一般 `modelOrder`、`providerOrder`、priority map 設定はありません。サポートされるソート
-フィールドは `subagentModels` です。`disabledModels` と各プロバイダーの `selectedModels` は公開
-フィールドです。そのため残りのピッカー順序を変えるには設定変更ではなくコード動作の変更が必要です。
+`modelPickerOrder` はピッカーの表示順だけを指定します。ルーティング ID
+`<provider>/<model>` だけを指定した場合、一覧にある非 featured 行は指定順の表示帯
+（`1000 + i`）に並びます。一覧にないルーティング行は通常の優先順位を保ち、この表示帯より前に
+残ります。`subagentModels` にも含まれる行は featured の優先順位を保ち、ネイティブ行の位置も変わりません。
+相対的な順序を指定したいルーティング行はすべて一覧に含めてください。
+
+ピッカー全体を並び替えるには、`/` を含まない、空でも空白だけでもないカタログ ID
+（例：`gpt-5.6-sol`）を含めます。
+
+```json
+{
+  "modelPickerOrder": ["gpt-5.6-sol", "opencode-go/glm-5.3"]
+}
+```
+
+指定した行が配列の順序で先頭に並び、未指定の行は本来の優先順位でその後に続きます。
+カタログ ID は完全一致で照合します。`gpt-5.6-sol` と `openai/gpt-5.6-sol` は別の行です。
+同じルーティング ID の未エンコード表記とエンコード済み表記も照合できますが、完全一致が優先されます。
+空の項目と空白だけの項目は無視します。アカウント別の行には selector を含む完全な ID を指定してください。
+
+### 移行時の注意：既存の一覧に含まれるネイティブ ID
+
+以前は `modelPickerOrder` 内の bare native ID が無視されていました。既存の一覧にこのような ID が
+あると、今後は featured 行を含むピッカー全体の並び替えが有効になります。従来のルーティング行だけの
+動作を保つには、bare ID を取り除いてください。未設定、空、空白だけ、ルーティング ID だけの一覧は
+従来どおり動作します。
+
+`modelPickerOrder` は `spawn_agent` の候補 5 件とその選択用の優先順位を変えません。
+変わるのは Codex ピッカーの表示用 `priority` だけで、opencodex は移動した各行の本来の優先順位を
+サブエージェント選択用に保持します。`disabledModels` と各プロバイダーの `selectedModels` は
+表示の有無を制御するフィールドです。別の `modelOrder`、`providerOrder`、priority map 設定はありません。

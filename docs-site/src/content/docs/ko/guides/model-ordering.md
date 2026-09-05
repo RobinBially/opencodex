@@ -22,6 +22,8 @@ native id는 해당 selector의 `i * N + j`를 사용합니다. Codex는 계속 
 
 selector가 없을 때의 priority는 다음과 같습니다.
 
+아래 우선순위 표와 예시는 선택기 전체 정렬을 켜지 않은 경우를 설명합니다.
+
 | 카탈로그 항목 | Priority | 근거 |
 | --- | ---: | --- |
 | `subagentModels[i]` | `i` (`0`부터 `4`) | `src/codex/catalog/sync.ts`의 featured rank map |
@@ -111,6 +113,33 @@ account selector가 있으면 bare native 선택이 selector-qualified 그룹으
 최대 5개만 사용하세요. account selector가 있으면 bare native 하나가 여러 selector-qualified 행으로
 확장될 수 있으므로 설정 항목과 노출 행이 항상 일대일로 대응하지는 않습니다.
 
-현재 `OcxConfig`에는 일반 `modelOrder`, `providerOrder`, priority map 설정이 없습니다. 지원되는 정렬
-필드는 `subagentModels`입니다. `disabledModels`와 각 프로바이더의 `selectedModels`는 노출
-필드입니다. 따라서 나머지 선택기 순서를 바꾸려면 설정 수정이 아니라 코드 동작 변경이 필요합니다.
+`modelPickerOrder`는 선택기의 표시 순서만 지정합니다. 라우팅 ID인 `<provider>/<model>`만
+넣으면 목록에 있는 비 featured 행이 지정 순서대로 별도 표시 구간(`1000 + i`)에 배치됩니다.
+목록에 없는 라우팅 행은 원래 우선순위를 유지하므로 이 구간보다 앞에 남습니다. `subagentModels`에도
+들어 있는 행은 featured 우선순위를 유지하고, 네이티브 행도 원래 위치를 유지합니다.
+상대적 순서를 정할 라우팅 행은 모두 목록에 넣어야 합니다.
+
+선택기 전체를 정렬하려면 `/`가 없는 카탈로그 ID를 하나 이상 넣으세요. `gpt-5.6-sol`처럼 실제 문자가
+있는 bare ID여야 하며, 빈 문자열이나 공백만 있는 항목은 해당하지 않습니다.
+
+```json
+{
+  "modelPickerOrder": ["gpt-5.6-sol", "opencode-go/glm-5.3"]
+}
+```
+
+지정한 행이 배열 순서대로 먼저 나오고, 나머지 행은 원래 우선순위대로 뒤에 나옵니다.
+카탈로그 ID는 정확히 일치하는 값으로 찾습니다. `gpt-5.6-sol`과 `openai/gpt-5.6-sol`은 서로 다른 행입니다.
+같은 라우팅 ID의 원문 표기와 인코딩 표기도 허용하지만, 정확히 일치하는 항목이 우선합니다.
+빈 항목과 공백뿐인 항목은 무시합니다. 계정별 행을 지정할 때는 selector가 포함된 전체 ID를 써야 합니다.
+
+### 마이그레이션 주의: 기존 목록에 들어 있는 네이티브 ID
+
+이전에는 `modelPickerOrder`의 bare native ID를 무시했습니다. 이제 기존 목록에 이런 ID가 있으면
+featured 행을 포함한 선택기 전체 정렬이 활성화됩니다. 기존 라우팅 전용 동작을 유지하려면 bare ID를
+제거하세요. 미설정 목록, 빈 목록, 공백만 있는 목록, 라우팅 ID만 있는 목록은 기존 동작을 유지합니다.
+
+`modelPickerOrder`는 `spawn_agent` 후보 5개와 후보 선택용 우선순위를 바꾸지 않습니다.
+Codex 선택기의 표시용 `priority`만 바꾸며, opencodex는 이동한 각 행의 원래 우선순위를 서브에이전트
+선택용으로 보존합니다. `disabledModels`와 각 공급자의 `selectedModels`는 노출 여부를 정하는 필드입니다.
+별도의 `modelOrder`, `providerOrder`, priority map 설정은 없습니다.
