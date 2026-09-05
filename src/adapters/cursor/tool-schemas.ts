@@ -41,6 +41,23 @@ export const CURSOR_FREEFORM_INPUT_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+function cursorFreeformInputSchema(tool: OcxTool): unknown {
+  const properties = tool.parameters?.properties;
+  const input = properties && typeof properties === "object" && !Array.isArray(properties)
+    ? (properties as Record<string, unknown>).input
+    : undefined;
+  const description = input && typeof input === "object" && !Array.isArray(input)
+    ? (input as Record<string, unknown>).description
+    : undefined;
+  if (typeof description !== "string") return CURSOR_FREEFORM_INPUT_SCHEMA;
+  return {
+    ...CURSOR_FREEFORM_INPUT_SCHEMA,
+    properties: {
+      input: { ...CURSOR_FREEFORM_INPUT_SCHEMA.properties.input, description },
+    },
+  };
+}
+
 /**
  * Structured single-replacement schema advertised to Cursor models in addition to the freeform
  * `apply_patch` tool. Cursor-trained models reliably emit exact-match replacements (the native
@@ -112,7 +129,7 @@ export function cursorToolInputSchema(tool: OcxTool): unknown {
     if (isBareCodexShellBridgeTool(tool)) {
       throw new Error(`freeform Cursor tools cannot use reserved shell bridge name ${tool.name}; use a namespace`);
     }
-    return CURSOR_FREEFORM_INPUT_SCHEMA;
+    return cursorFreeformInputSchema(tool);
   }
   return isBareCodexExecCommandTool(tool) ? CURSOR_EXEC_COMMAND_INPUT_SCHEMA : (tool.parameters ?? {});
 }
@@ -127,7 +144,7 @@ export function cursorToolArgNormalizeSchema(tool: OcxTool): unknown {
     if (isBareCodexShellBridgeTool(tool)) {
       throw new Error(`freeform Cursor tools cannot use reserved shell bridge name ${tool.name}; use a namespace`);
     }
-    return CURSOR_FREEFORM_INPUT_SCHEMA;
+    return cursorFreeformInputSchema(tool);
   }
   if (isBareCodexShellBridgeTool(tool)) {
     return shellBridgeArgNormalizeSchema(tool);
