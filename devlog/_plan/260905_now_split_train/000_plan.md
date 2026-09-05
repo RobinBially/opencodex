@@ -22,9 +22,11 @@ the closeout tallies both and only the first counts as resolved.
 - Pure move only. No renames of exported identifiers, no signature changes,
   no deletion of exports, no "while I'm here" fixes. A behavior defect found
   during a move is recorded in the decade doc and left alone.
-- New leaf files ≤400 lines; the residual original file ≤400 lines or the
-  layer states why a second layer (`#b`) follows (003 INTERMEDIATE-RESIDUAL-01,
-  RESIDUAL-FN-01).
+- New leaf files ≤400 lines. A residual original file above400 requires a
+  bounded declared successor chain (003 INTERMEDIATE-RESIDUAL-01), or the
+  explicit final-state RESIDUAL-FN-01 exception in003. The exception requires
+  one unsplittable function to be the sole cause after all permitted moves;
+  it is recorded as unresolved function debt, not a resolved file.
 - The ≤500-line PR cap is measured on the non-move diff for pure-move layers
   (003 PURE-MOVE-SIZE-01); non-move diff ≤150 lines.
 - Re-export binds nothing locally (260818 WP1 lesson): internal call sites in
@@ -37,11 +39,14 @@ the closeout tallies both and only the first counts as resolved.
   a new leaf imported from a protected root must not reach `src/lab`.
 - Verification from WP400 onward: typecheck, focused tests, privacy scan and
   full suite run in an isolated checkout on `ssh lidge`; no local suites.
-- Git: layer branches `codex/split-<slug>`; bottom layer base `dev`, each
-  upper layer base = the branch below; push + PR creation pre-authorized by
-  the user for this loop; **merge never** (DEV-STACK-04 ESCALATE). Cascade
-  with `git rebase --update-refs` + `--force-with-lease` when a lower layer
-  changes (DEV-STACK-02).
+- Git: layer branches `codex/split-<slug>`. Only declared dependency edges
+  use a lower layer's branch; independent layers target `dev`, as specified
+  by003 STACK-INDEPENDENCE-01 and002. Push and PR creation are pre-authorized;
+  admin landing follows003 USER-ADMIN-LANDING-01 after passing checks.
+  Cascade only affected dependent branches when their lower layer changes,
+  using explicit `--force-with-lease` protection. Preserve checkpoint and
+  unrelated refs; do not let automatic update-refs move them. Managed-worktree
+  identity and current verification rules in003 remain binding.
 - Open-stack depth cap: 5 dependent PRs. S04 contains six total layers,
   including prerequisite layer 105, but STACK-INDEPENDENCE-01 replaced the initial
   six-deep linear proposal: its longest current base chain is 3. Across the
@@ -64,12 +69,14 @@ Total: 77 implementation layers across 21 stacks (002_layer_map.md; 105 and
 ## Out of scope
 
 The 151 `RESOLVABLE_AFTER` and 19 `ACCEPTED` rows; core.ts / config.ts /
-service.ts / auth-api.ts; merges; releases.
+service.ts / auth-api.ts; releases and direct branch pushes. Reviewed admin
+landing after passing CI is now authorized by USER-ADMIN-LANDING-01 in003.
 
 ## Terminal outcome expected
 
-DONE when every layer in 002 has an open PR with a green exact-head CI rollup
-recorded in its decade doc.
+DONE when every approved layer in002 has passing final-head CI and an admin
+landing recorded with its review, stack-safety and dev-ancestry evidence.
+The user's later delivery instruction supersedes the initial open-PR-only end.
 
 ## Completion spine
 

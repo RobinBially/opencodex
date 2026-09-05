@@ -42,8 +42,13 @@ Permitted transformations of a moved line (still pure-move):
    Evidence: the C phase pastes `git diff --color-moved=dimmed-zebra
    --color-moved-ws=allow-indentation-change` for each converted method and
    shows the body as a move block; the layer's focused tests cover every
-   converted method (listed in the doc's Tests section). The same rule
-   covers a class method split by `this`-fields, should one occur.
+   converted method (listed in the doc's Tests section). This exception is
+   limited to object-literal methods with ordinary lexical captures and no
+   dependence on `super`, private-name resolution, dynamic `this`,
+   `arguments`, or other method-only semantics. Class methods are excluded:
+   do not replace prototype dispatch with an own-property function. Such
+   cases need a separately planned and tested behavior-preserving design,
+   not this pure-move exception.
 4. JSX block → sibling component with verbatim props (GUI-SEAM-01).
 
 Anything else (reordering statements inside a moved body, renaming, changing
@@ -57,10 +62,14 @@ The layer count in 002 stands as drafted; no stack is re-sliced for size.
 S07 L1: `parseRequest` is 464 lines by itself, so `src/responses/parser.ts`
 cannot reach ≤400 by moving other symbols. Splitting the function is a
 behavior-preserving extraction, not a move, and is out of this train's scope.
-Decision: the layer moves everything movable, the residual stays over 400,
-and the doc records the function as `RESOLVABLE_AFTER(design:L1-parse-request-extraction)`
-for the 021 ledger's next revision. Same rule applies to any other layer that
-finds a single >350-line function (none other reported).
+Decision: apply this exception only after all permitted moves, when the
+final residual still exceeds400 lines and one unsplittable function is the
+sole cause. A function exceeding350 lines is not sufficient on its own.
+Record the final residual size, the function and why no further pure move
+can bring the file within400. For this parser case, record
+`RESOLVABLE_AFTER(design:L1-parse-request-extraction)` in the next021 revision.
+Every later case needs its own final-state evidence. RESIDUAL-ACCOUNTING-01
+keeps such files outside the resolved count.
 
 ## INTERMEDIATE-RESIDUAL-01 — over-400 residuals inside a multi-part file
 
@@ -203,3 +212,23 @@ state, while preserving output and failures inside the receipt command.
 No local Bun test command is allowed. Older shared-checkout recipes must not
 be reused; each current plan must supply its isolated verifier. Availability
 and success require real execution evidence.
+
+## USER-ADMIN-LANDING-01 — current delivery authority
+
+The user's later direct instruction requires every merge to use admin after
+CI passes. This supersedes earlier no-merge and open-PR-only delivery language
+in000, individual decade plans and the original goal wording. It does not
+waive verification or authorize direct pushes, releases or service changes.
+
+Before each landing, verify the exact PR head and tested integration tree,
+fresh passing required CI, and resolution of valid review blockers. Use admin
+merge with an explicit expected-head match. Preserve stacked children before
+automatic parent-branch deletion; recheck their base/head/diff after retarget.
+Fetch dev and prove the merge is its ancestor. Record these results per layer.
+Existing open criterion c-4 was amended to this requirement with its original
+definition preserved in the steering ledger; no criterion was marked met.
+
+The coordinator still schedules one non-Windows CI at a time. Retargeting and
+merging may start new CI, so those actions consume the assigned slot too.
+Windows-owner work remains excluded. Each peer retains its task scope; the
+admin instruction removes redundant permission questions, not failure gates.
