@@ -519,9 +519,7 @@ export function buildCatalogEntriesFromObservedState({
   // modelPickerOrder is unset the helper is a no-op and every priority below is byte-identical to
   // before. The spawn_agent candidate window is derived separately from SPAWN_PRIORITY_FIELD, so
   // this display reorder cannot change which rows are spawn candidates.
-  const pickerOrder = Array.isArray(modelPickerOrder)
-    ? modelPickerOrder.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
-    : [];
+  const pickerOrder = normalizeModelPickerOrder(modelPickerOrder);
   const pickerOrderRank = new Map(pickerOrder.map((slug, i) => [slug, i] as const));
   const pickerOrderActive = pickerOrder.length > 0;
   // The display band reuses the existing high priority tier (>= PICKER_ORDER_PRIORITY_BASE, the
@@ -781,6 +779,12 @@ export const CANONICAL_NATIVE_CATALOG_CONTENT_POLICY: Readonly<
   unsupportedNativeEntries: "drop",
 });
 
+function normalizeModelPickerOrder(order: unknown): string[] {
+  return Array.isArray(order)
+    ? order.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+    : [];
+}
+
 /** Preserve exact-id precedence while accepting the existing raw/encoded slug spellings. */
 function modelPickerRank(order: readonly string[]): (slug: string) => number | undefined {
   const exact = new Map(order.map((slug, index) => [slug, index]));
@@ -790,7 +794,7 @@ function modelPickerRank(order: readonly string[]): (slug: string) => number | u
 
 /** A picker order containing native ids orders the whole list, without changing spawn ranks. */
 export function applyFullModelPickerOrder(entries: RawEntry[], order: readonly string[]): void {
-  const pickerOrder = order.filter(slug => slug.trim().length > 0);
+  const pickerOrder = normalizeModelPickerOrder(order);
   if (!pickerOrder.some(slug => !slug.includes("/"))) return;
   const rankOf = modelPickerRank(pickerOrder);
   for (const entry of entries) {
@@ -1089,7 +1093,7 @@ export function mergeCatalogEntriesFromObservedState({
   });
   // Retained rows bypass the builder. Recompute managed spawn ranks from current config
   // before either display-order mode; a saved display override is not current roster authority.
-  const pickerOrder = modelPickerOrder.filter(slug => slug.trim().length > 0);
+  const pickerOrder = normalizeModelPickerOrder(modelPickerOrder);
   const fullPickerOrder = pickerOrder.some(slug => !slug.includes("/"));
   const rankOf = modelPickerRank(pickerOrder);
   const featuredRankOf = modelPickerRank(featured);

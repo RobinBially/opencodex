@@ -1,5 +1,22 @@
 import { routedSlug } from "../../src/providers/slug-codec";
-import { expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { saveConfig } from "../../src/config";
+import type { OcxConfig } from "../../src/types";
+import { captureCatalogAdmissionSnapshot } from "../../src/codex/catalog-admission";
+import { convergeCodexCatalog } from "../../src/codex/convergence";
+import { loadBundledCodexCatalog, resetCatalogRuntimeStateForTests, syncCatalogModels } from "../../src/codex/catalog";
+import { setBundledCatalogCacheForTests } from "../../src/codex/catalog/bundled";
+import type { RawCatalog, RawEntry } from "../../src/codex/catalog/parsing";
+import { clearModelCache, markModelsFetchFailure } from "../../src/codex/model-cache";
+import { persistCodexRuntime, resetCodexRuntimeResolveCacheForTests, setCodexRuntimeResolveCacheForTests } from "../../src/codex/runtime";
+import { resetCodexModelEntitlementCacheForTests } from "../../src/codex/model-entitlements";
+import { resolveCodexCatalogSerializationDatabasePath, resolveEffectiveUserIdentity } from "../../src/codex/user-identity";
+import { CODEX_FORWARD_BASE_URL } from "../../src/providers/openai-tiers";
+import { removeTreeWithRetry } from "../helpers/remove-tree";
+import { effectiveSubagentRoster } from "../../src/codex/catalog/sync";
 import { buildCatalogEntriesFromObservedState, mergeCatalogEntriesFromObservedState, CANONICAL_NATIVE_CATALOG_CONTENT_POLICY, applyFullModelPickerOrder, deriveEntry, mergeCatalogEntriesForSync, SPAWN_PRIORITY_FIELD } from "../../src/codex/catalog/sync";
 
 test("native-first picker order preserves Go subagent ranks and is repeatable", () => {
@@ -21,6 +38,14 @@ test("existing routed-only ordering retains its behavior", () => {
   const rows: any[] = [{ slug: "opencode-go/glm-5.3", priority: 1000 }];
   applyFullModelPickerOrder(rows, ["opencode-go/glm-5.3"]);
   expect(rows).toEqual([{ slug: "opencode-go/glm-5.3", priority: 1000 }]);
+});
+
+test("full picker helper treats a null passthrough order as absent", () => {
+  const rows = [{ slug: "gpt-5.5", priority: 9 }, { slug: "opencode-go/model", priority: 0 }];
+  const before = structuredClone(rows);
+  // Production callers coalesce null; the exported boundary must also tolerate it directly.
+  applyFullModelPickerOrder(rows, null as unknown as readonly string[]);
+  expect(rows).toEqual(before);
 });
 
 
@@ -108,4 +133,199 @@ test("full ordering ignores empty entries and accepts raw upstream ids with slas
   const exact = [{ slug, priority: 5 }];
   applyFullModelPickerOrder(exact, ["gpt-5.6-sol", slug, "vendor/team/model"]);
   expect(exact[0]!.priority).toBe(1);
+});
+
+describe("picker ordering through production catalog writers", () => {
+  const ids = ["ordering-a", "ordering-b", "ordering-c", "ordering-d", "ordering-e", "ordering-f"];
+  const slugs = ids.map(id => routedSlug("opencode-go", id));
+  const configuredEfforts = ["high", "xhigh"];
+  const envKeys = ["CODEX_HOME", "OPENCODEX_HOME", "CODEX_CLI_PATH"] as const;
+  let previousEnv: Array<string | undefined>;
+  let previousFetch: typeof fetch;
+  let root: string;
+  let codexHome: string;
+  let catalogPath: string;
+  let fetchCalls: number;
+
+  beforeEach(() => {
+    previousEnv = envKeys.map(key => process.env[key]);
+    previousFetch = globalThis.fetch;
+    root = realpathSync.native(mkdtempSync(join(tmpdir(), "ocx-picker-writers-")));
+    codexHome = join(root, "codex");
+    const opencodexHome = join(root, "ocx");
+    mkdirSync(codexHome);
+    mkdirSync(opencodexHome);
+    process.env.CODEX_HOME = codexHome;
+    process.env.OPENCODEX_HOME = opencodexHome;
+    const runtimeCommand = join(root, "fixture-codex");
+    process.env.CODEX_CLI_PATH = runtimeCommand;
+    catalogPath = join(codexHome, "custom-catalog.json");
+    writeFileSync(join(codexHome, "config.toml"),
+      'model_catalog_json = "custom-catalog.json"\n[features]\nmulti_agent_v2 = true\n');
+    resetCatalogRuntimeStateForTests();
+    resetCodexRuntimeResolveCacheForTests();
+    resetCodexModelEntitlementCacheForTests();
+    const runtime = { command: runtimeCommand, version: "0.145.0", source: "fallback" as const };
+    persistCodexRuntime(runtime);
+    setCodexRuntimeResolveCacheForTests({ runtime, failures: [] }, { discoverAlternatives: false });
+    const native = deriveEntry(null, "gpt-5.5", "Native fixture", 9);
+    const catalog = { models: [native] };
+    setBundledCatalogCacheForTests(runtime, catalog);
+    // Both runtime selection and bundled support are fixture-owned, before admission capture.
+    expect(loadBundledCodexCatalog()?.models?.[0]?.slug).toBe("gpt-5.5");
+    writeFileSync(catalogPath, JSON.stringify(catalog));
+    fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      throw new Error("catalog writer fixture must not make a network request");
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    try {
+      const database = resolveCodexCatalogSerializationDatabasePath(resolveEffectiveUserIdentity(), codexHome);
+      for (const suffix of ["", "-journal", "-wal", "-shm"]) rmSync(`${database}${suffix}`, { force: true });
+    } finally {
+      globalThis.fetch = previousFetch;
+      envKeys.forEach((key, index) => {
+        const value = previousEnv[index];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      });
+      resetCatalogRuntimeStateForTests();
+      resetCodexRuntimeResolveCacheForTests();
+      resetCodexModelEntitlementCacheForTests();
+      removeTreeWithRetry(root);
+    }
+  });
+
+  function config(featured = slugs.slice(0, 5), order: string[] = []): OcxConfig {
+    return {
+      port: 10100,
+      defaultProvider: "opencode-go",
+      multiAgentMode: "v2",
+      subagentModels: featured,
+      modelPickerOrder: order,
+      providers: {
+        openai: { adapter: "openai-responses", baseUrl: CODEX_FORWARD_BASE_URL, authMode: "forward" },
+        "opencode-go": {
+          adapter: "openai-chat", baseUrl: "https://catalog-fixture.invalid/v1", authMode: "key",
+          apiKey: "ordering-fixture-key", liveModels: false, models: [...ids],
+          modelReasoningEfforts: Object.fromEntries(ids.map(id => [id, [...configuredEfforts]])),
+          modelDefaultReasoningEfforts: Object.fromEntries(ids.map(id => [id, "xhigh"])),
+        },
+      },
+    };
+  }
+
+  async function writeCatalog(writer: "convergence" | "retained", next: OcxConfig, degraded = false): Promise<RawEntry[]> {
+    saveConfig(next);
+    if (degraded) {
+      // No cached/static rows: the caller must preserve the catalog already on disk.
+      clearModelCache("opencode-go");
+      markModelsFetchFailure("opencode-go");
+    }
+    if (writer === "convergence") {
+      const result = await convergeCodexCatalog(captureCatalogAdmissionSnapshot(next), {
+        action: "converge", scope: "catalog", reason: "management-mutation", mode: "explicit", deadlineMs: 5_000,
+      });
+      expect(result.catalogRefresh).toMatchObject({ status: "committed", degraded });
+    } else {
+      const result = await syncCatalogModels(next);
+      expect(result.path).toBe(catalogPath);
+      expect(result.skippedReason).toBeUndefined();
+    }
+    expect(fetchCalls).toBe(0);
+    return (JSON.parse(readFileSync(catalogPath, "utf8")) as RawCatalog).models ?? [];
+  }
+
+  function roster(rows: RawEntry[], featured: string[]) {
+    const result = effectiveSubagentRoster(featured, "v2", rows);
+    expect(result.candidates.map(candidate => candidate.model)).toEqual(featured);
+    expect(result.candidates).toHaveLength(5);
+    expect(result.advertised).toEqual(result.candidates);
+    for (const candidate of result.candidates) expect(candidate.efforts).toEqual(configuredEfforts);
+    for (const slug of slugs) {
+      expect(rows.find(row => row.slug === slug)).toMatchObject({
+        default_reasoning_level: "xhigh",
+        supported_reasoning_levels: configuredEfforts.map(effort => expect.objectContaining({ effort })),
+      });
+    }
+    return result;
+  }
+
+  for (const writer of ["convergence", "retained"] as const) {
+    const filteredOrder = ["gpt-5.5", slugs[5]!, ...slugs.slice(0, 5).reverse(), " gpt-5.5 "];
+    const malformedOrders: Array<{ label: string; input: unknown; filtered: string[] }> = [
+      { label: "string scalar", input: "gpt-5.5", filtered: [] },
+      { label: "number scalar", input: 7, filtered: [] },
+      { label: "boolean scalar", input: true, filtered: [] },
+      { label: "object", input: { 0: "gpt-5.5", length: 1 }, filtered: [] },
+      {
+        label: "mixed array",
+        input: [null, 7, "", " \t", filteredOrder[0], false, filteredOrder[1], {}, ...filteredOrder.slice(2)],
+        // Significant surrounding whitespace remains part of the original spelling.
+        filtered: filteredOrder,
+      },
+    ];
+
+    test.each(malformedOrders)(`${writer} tolerates $label passthrough order in healthy and retained discovery`, async ({ input, filtered }) => {
+      const control = config(slugs.slice(0, 5), filtered);
+      const expected = await writeCatalog(writer, control);
+      if (filtered.length > 0) {
+        // Trimming the final nonblank string would incorrectly override the native rank.
+        expect(expected.find(row => row.slug === "gpt-5.5")?.priority).toBe(0);
+      }
+      const expectedRoster = roster(expected, control.subagentModels!);
+      // Model configuration is passthrough at runtime; exercise the writers, not the normalizer.
+      const malformed = Object.assign(config(control.subagentModels), { modelPickerOrder: input });
+      const actual = await writeCatalog(writer, malformed);
+      expect(actual).toEqual(expected);
+      expect(roster(actual, control.subagentModels!)).toEqual(expectedRoster);
+
+      malformed.providers["opencode-go"]!.liveModels = true;
+      malformed.providers["opencode-go"]!.models = [];
+      const retained = await writeCatalog(writer, malformed, true);
+      expect(retained).toEqual(expected);
+      expect(roster(retained, control.subagentModels!)).toEqual(expectedRoster);
+    }, 30_000);
+
+    test(`${writer} applies full display order without changing five eligible Go candidates`, async () => {
+      const initial = config();
+      const before = roster(await writeCatalog(writer, initial), initial.subagentModels!);
+      // Bring the sixth routed model above every featured model in the display.
+      const order = ["gpt-5.5", slugs[5]!, ...slugs.slice(0, 5).reverse()];
+      const ordered = config(initial.subagentModels, order);
+      const rows = await writeCatalog(writer, ordered);
+      expect(rows.filter(row => order.includes(String(row.slug)))
+        .sort((a, b) => Number(a.priority) - Number(b.priority)).map(row => row.slug)).toEqual(order);
+      expect(roster(rows, ordered.subagentModels!)).toEqual(before);
+      expect(roster(await writeCatalog(writer, ordered), ordered.subagentModels!)).toEqual(before);
+    }, 30_000);
+
+    test(`${writer} refreshes retained outage ranks after a full-picker and featured-roster change`, async () => {
+      const previous = await writeCatalog(writer, config(slugs.slice(0, 5), ["gpt-5.5", ...slugs]));
+      for (const row of previous) {
+        if (slugs.includes(String(row.slug))) row.ordering_retained_fixture = true;
+      }
+      // Promote the formerly excluded sixth model, demote the first, and clear full ordering.
+      const featured = slugs.slice(1).reverse();
+      const next = config(featured, [slugs[0]!]);
+      const healthy = await writeCatalog(writer, next);
+      const expectedRoster = roster(healthy, featured);
+      writeFileSync(catalogPath, JSON.stringify({ models: previous }));
+      next.providers["opencode-go"]!.liveModels = true;
+      next.providers["opencode-go"]!.models = [];
+      const retained = await writeCatalog(writer, next, true);
+      expect(roster(retained, featured)).toEqual(expectedRoster);
+      for (const slug of slugs) {
+        const actual = retained.find(row => row.slug === slug)!;
+        const expected = healthy.find(row => row.slug === slug)!;
+        expect(actual.ordering_retained_fixture).toBe(true);
+        expect(actual.priority).toBe(expected.priority);
+        expect(actual[SPAWN_PRIORITY_FIELD]).toBe(expected[SPAWN_PRIORITY_FIELD]);
+      }
+      expect(await writeCatalog(writer, next, true)).toEqual(retained);
+    }, 30_000);
+  }
 });
