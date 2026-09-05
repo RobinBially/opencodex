@@ -43,11 +43,13 @@ The exact original patch is the complete diff `git show c8240c51d664f7cfb790b6d6
 Current anchors: `src/adapters/openai-chat.ts:1661` pending interface, `:1856` identity lookup, `:1873` budget opening, `:1912` argument-byte accounting, `:1679` budget closing. Replace the lookup block with:
 
 ```ts
-if (typeof rawIndex === "number"
-    && (!Number.isSafeInteger(rawIndex) || rawIndex < 0)) {
+if (rawIndex !== undefined && rawIndex !== null
+    && (typeof rawIndex !== "number"
+      || !Number.isSafeInteger(rawIndex)
+      || rawIndex < 0)) {
   return yield* terminateWithError({
     ...invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage),
-    message: "upstream response contained invalid tool calls (invalid numeric index)",
+    message: "upstream response contained invalid tool calls (invalid index)",
   });
 }
 const indexKey = typeof rawIndex === "number" ? `i:${rawIndex}` : undefined;
@@ -126,3 +128,7 @@ Only non-negative safe-integer indexes may become an alias. Immediately after re
 ## Safe-integer review repair
 
 The numeric guard uses Number.isSafeInteger: parsed indices beyond the safe range can already have lost identity precision. Add a raw-wire regression containing distinct large integer literals (not JS values rounded before serialization), and retain a positive MAX_SAFE_INTEGER boundary. Capture error/no tool success plus existing reservation-release coverage. The correction must be verified in this same unit; no original source tests are removed.
+
+## Claimed-type boundary update
+
+022 supersedes the earlier non-numeric-index tolerance assumption: only missing/null indexes are absent. Every other claimed value must be a non-negative safe integer; no coercion of strings/objects/bools/arrays. Repeated ID/name/argument-field tolerance is unchanged.

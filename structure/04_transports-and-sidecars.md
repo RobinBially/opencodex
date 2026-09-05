@@ -435,7 +435,7 @@ These are transport-fidelity guarantees, not a provider-billing guarantee.
 
 Eligible complete-input creates can retain a canonical upstream socket within
 one selected account, credential, thread and turn. Model/tier and immutable
-handshake headers must also match. Turn-state and turn-metadata headers are
+handshake headers and the selected outbound proxy must also match. Turn-state and turn-metadata headers are
 projected into their same-name per-frame metadata slots; explicit body values win.
 The pool retains at most 32 sockets, expires idle sockets after 30 seconds, and
 retires a socket after five minutes or 32 successful exchanges (after active work
@@ -644,7 +644,11 @@ the upgrade with 426 so Codex falls back to HTTP cleanly.
 
 That setting controls the client-facing upgrade only. The transparent upstream
 ChatGPT WS optimization described above is selected independently and still
-returns the same downstream SSE contract.
+returns the same downstream SSE contract. Its WSS route checks NO_PROXY first, then selects the
+first non-empty HTTPS_PROXY, https_proxy, ALL_PROXY, or all_proxy value. HTTP_PROXY alone does not
+route WSS. Unsupported or malformed selected proxy values skip the WebSocket attempt and use the
+existing SSE path immediately; they never fall through to a lower-priority proxy or direct WebSocket
+egress. HTTP/SSE fallback retains Bun fetch's own proxy rules, which do not consult ALL_PROXY.
 
 The endpoint handles `response.create`, ignores `response.processed`, supports warmup
 `generate: false`, and feeds the same request pipeline as HTTP/SSE.
@@ -1505,13 +1509,15 @@ Native Composer/MCP behavior and text-only historical replay remain unchanged.
 ## Chat streamed tool-call identity
 
 `src/adapters/openai-chat.ts` retains a call's first observed non-negative safe integer
-index as an alias when the call started by ID. Numeric indexes that are negative,
-non-integer or outside JavaScript's safe-integer range terminate the stream before
-any key, alias, ID or last-call matching. `Number.MAX_SAFE_INTEGER` is accepted;
+index as an alias when the call started by ID. Every present, non-null index must
+be a number in that range: strings (including numeric and empty strings), booleans,
+objects, arrays, negative numbers, fractions and unsafe integers terminate the stream
+before any key, alias, ID or last-call matching. `Number.MAX_SAFE_INTEGER` is accepted;
 larger integers are rejected because distinct wire literals can parse to the same number.
 The invalid-index error releases all pending call reservations without emitting
 those calls or a successful completion; invalid indexes are never treated as absent.
-Missing and non-numeric index placeholders retain their existing tolerance.
+Only missing and null indexes are absent-index placeholders. Repeated ID, name and
+argument string-field tolerance retains its existing rules.
 
 For valid indexes, lookup preserves direct-key precedence, then index alias, then
 ID fallback. The initial key continues to own all translator budget reservations
@@ -1519,7 +1525,8 @@ and release; learning an alias creates no additional owner. Unassociated index-o
 fragments are not guessed onto pending ID-only calls.
 `tests/adapters/openai/openai-chat-parallel-stream.test.ts` covers late aliases,
 parallel/colliding identities, distinct unsafe raw JSON index literals, the maximum
-safe-integer boundary, invalid numeric indexes and UTF-8 byte-limit boundaries.
+safe-integer boundary, invalid index types, missing/null continuations and UTF-8
+byte-limit boundaries.
 
 ## Cursor executable tool schema ownership
 

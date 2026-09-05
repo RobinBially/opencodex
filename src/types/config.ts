@@ -603,8 +603,10 @@ export interface OcxConfig {
    * so absence is the only default state this feature has.
    */
   quotaResetNotify?: OcxQuotaResetNotifyConfig;
-  /** Provider-level Codex-visible context caps. Values only lower known model context windows. */
+  /** Active provider context limits; native long windows remain within their supported ceilings. */
   providerContextCaps?: Record<string, number>;
+  /** Last selected provider caps; retained while a cap is switched off. Not an active limit. */
+  providerContextCapValues?: Record<string, number>;
   /** Global Codex-visible context cap value (tokens). Falls back to DEFAULT_PROVIDER_CONTEXT_CAP. */
   contextCapValue?: number;
   /** Bind hostname. Default "127.0.0.1" (loopback only). Set "0.0.0.0" to expose on all interfaces. */

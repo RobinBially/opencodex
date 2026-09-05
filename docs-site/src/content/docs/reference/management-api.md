@@ -244,6 +244,18 @@ keys are not returned to dashboard clients.
 | `GET, PUT /api/provider-context-caps` | Read or update global, all-provider, or one-provider context caps | 400 invalid request; 404 unknown provider |
 | `GET /api/provider-presets` | Return GUI provider presets derived from the runtime registry | — |
 
+The provider context-cap response includes `caps` (active limits) and `values` (last selected
+values, retained while disabled). Enabling a provider without `value` restores its selection,
+or uses the global `contextCapValue` on first enable. This also applies to OpenAI: the switch
+does not select a special 922k mode. An active cap bounds every native window; models with a
+supported long-context window may expand only up to their own supported ceiling.
+Updating the global value with `{ "value": 600000, "setAll": true }` changes only enabled
+provider caps; disabled providers keep their remembered selections when later enabled.
+In contrast, `{ "setAll": true }` without `value` enables every configured provider at the
+current global value, replacing their remembered selections. Turning a cap off does not
+activate its remembered value or erase the selection.
+
+
 `provider_has_dependent_combos` is a safety barrier: remove or edit the dependent combos before
 deleting their provider.
 

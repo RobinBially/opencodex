@@ -27,8 +27,9 @@ GUI で登録または OAuth ログインが完了すると、Models ページ�
 | `providers` | `Record<string, OcxProviderConfig>` | — |プロバイダー名からプロバイダー設定へのマップ。 |
 | `openaiProviderTierVersion?` | `2` |移行によって設定される |単一のオプション対応 OpenAI プロジェクションを完了としてマークします。 |
 | `disabledModels?` | `string[]` | — | Codex catalog と `/v1/models` から非表示にする model。直接の proxy 呼び出しはブロックしません。routed id は一覧から削除されます。account-qualified native id は該当する selector row だけを非表示にし、bare native GPT id は bare row とその model の全 account-selector row を非表示にします。Models ページに表示されるのは bare native 行と routed 行だけです。selector-qualified 行を 1 つだけ非表示にするには、この設定フィールドを直接編集してください。 |
-| `providerContextCaps?` | `Record<string, number>` | `{}` |プロバイダーごとの Codex に表示されるコンテキストの上限。キャップは既知のコンテキスト ウィンドウを下げるだけです。 |
-| `contextCapValue?` | `number` | `350000` |ダッシュボードのコンテキストキャップ コントロールで使用される既定値。「すべてのルーティング済みプロバイダーに適用」がオンになっている場合のみ、変更によってすべてのルーティング済みプロバイダー（`providerContextCaps` エントリがまだないプロバイダーを含む）に値が適用されます。それ以外では各プロバイダーは独自のキャップを保持します。 |
+| `providerContextCaps?` | `Record<string, number>` | `{}` | プロバイダーごとの有効なコンテキスト上限。通常のウィンドウは縮小されます。長いウィンドウに対応したネイティブモデルは、そのモデルが対応する上限まで拡張できます。 |
+| `providerContextCapValues?` | `Record<string, number>` | `{}` | プロバイダーごとに最後に選択した上限。無効にしても保持され、この値だけで上限が有効になることはありません。有効な値が保存済みの値より優先されます。 |
+| `contextCapValue?` | `number` | `350000` | 初回の有効化で使う既定値。再び有効にすると、そのプロバイダーの選択値を復元します。`setAll: true` とともにグローバル値を変更すると、有効な上限だけを更新します。値を指定せずに `setAll: true` を送ると、設定済みの全プロバイダーの上限を現在のグローバル値で有効にします。 |
 | `codexAccounts?` | `CodexAccount[]` | `[]` | ChatGPT/Codex プール アカウントのメタデータは Codex Auth によって管理されます。秘密は`codex-accounts.json`に別に住んでいます。 |
 | `pausedCodexAccountIds?` | `string[]` | `[]` |再開するまでプールの選択から除外されるアカウント (一時停止時のメイン `__main__` アカウントを含む)。 |
 | `codexAccountNamespaces?` | `Record<string, string>` | — | 任意の公開 model selector を保存済み Codex アカウント target に対応付ける任意の map。account-qualified picker row が有効な場合、target が存在する各 selector は Codex picker に個別の `<selector>/<native-openai-model>` row を追加し、各 row はそのアカウントだけを使用します。selector が 1 つでも有効な場合、bare native row は picker で非表示になりますが、明示的に無効化されない限り id は引き続き routing でき、raw `/v1/models` にも表示されます。 |

@@ -269,11 +269,18 @@ describe("openai-chat parallel tool call stream assembly", () => {
   });
 
   test.each([
-    [-1, undefined],
-    [-1, "call_a"],
-    [0.5, undefined],
-    [0.5, "call_a"],
-  ] as const)("invalid numeric index %s with ID %s aborts without reassigning pending calls", async (index, id) => {
+    ["negative, no ID", -1, undefined],
+    ["negative, matching ID", -1, "call_a"],
+    ["fractional, no ID", 0.5, undefined],
+    ["fractional, matching ID", 0.5, "call_a"],
+    ["numeric string, no ID", "0", undefined],
+    ["numeric string, matching ID", "0", "call_a"],
+    ["empty string", "", undefined],
+    ["true", true, undefined],
+    ["false", false, undefined],
+    ["object", {}, undefined],
+    ["array", [], undefined],
+  ] as const)("invalid index (%s) aborts without reassigning pending calls", async (_label, index, id) => {
     const budget = createTestTranslatorBudget();
     const response = new Response(sse([
       chunkOf([
@@ -304,12 +311,31 @@ describe("openai-chat parallel tool call stream assembly", () => {
       type: "error",
       status: 502,
       errorType: "upstream_error",
-      message: "upstream response contained invalid tool calls (invalid numeric index)",
+      message: "upstream response contained invalid tool calls (invalid index)",
     })]);
     expect(events.at(-1)?.type).toBe("error");
     expect(events.some(event => event.type === "done")).toBe(false);
     expect(events.some(event => event.type === "tool_call_start"
       || event.type === "tool_call_delta" || event.type === "tool_call_end")).toBe(false);
+    expect(budget.snapshot()).toMatchObject({ activeCalls: 0, currentBytes: 0, overflows: 0 });
+  });
+
+  test.each([
+    ["missing", undefined],
+    ["null", null],
+  ] as const)("%s index placeholders preserve continuation through a later valid alias", async (_label, index) => {
+    const budget = createTestTranslatorBudget();
+    const events = await collect(sse([
+      chunkOf([{ index, id: "call_a", function: { name: "read", arguments: '{"p":' } }]),
+      chunkOf([{ index, id: "call_a", function: { arguments: '"x"' } }]),
+      chunkOf([{ index: 7, id: "call_a", function: { arguments: "}" } }]),
+      chunkOf([{ index, function: { arguments: " " } }]),
+      chunkOf([{ index: 7, function: { arguments: " " } }]),
+      chunkOf([], "tool_calls"),
+    ]), budget);
+    expect(assembled(events)).toEqual([{ id: "call_a", name: "read", args: '{"p":"x"}  ' }]);
+    expect(events.some(event => event.type === "error")).toBe(false);
+    expect(events.at(-1)?.type).toBe("done");
     expect(budget.snapshot()).toMatchObject({ activeCalls: 0, currentBytes: 0, overflows: 0 });
   });
 
@@ -349,7 +375,7 @@ data: [DONE]
       type: "error",
       status: 502,
       errorType: "upstream_error",
-      message: "upstream response contained invalid tool calls (invalid numeric index)",
+      message: "upstream response contained invalid tool calls (invalid index)",
     });
     expect(budget.snapshot()).toMatchObject({ activeCalls: 0, currentBytes: 0, overflows: 0 });
   });

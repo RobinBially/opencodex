@@ -53,8 +53,10 @@ Streaming tool calls retain their identity when a provider first sends an ID,
 then associates that ID with an index, and later sends index-only argument
 fragments. Those fragments assemble into one call with the original name and
 complete arguments; parallel calls retain separate identities.
-Numeric streamed tool-call indexes must be non-negative safe integers; malformed numeric
-indexes terminate the stream with an upstream error before identity matching.
+When present, streamed tool-call indexes must be non-negative safe integers. Non-numeric
+values and negative, fractional, or unsafe numbers terminate the stream with an upstream
+error before identity matching. Missing and null indexes remain absent-index placeholders;
+numeric strings are not coerced.
 
 ## `ollama-native`
 
@@ -102,10 +104,22 @@ body and response, with narrow compatibility rewrites for routed gateways.
 `forward` uses configured static headers without relaying caller authorization; `key` uses the
 configured provider key.
 
+Adapter selection does not select the upstream transport. Eligible requests can use the
+[upstream WebSocket proxy route](/reference/proxy-formats/#json-and-sse-output); invalid or unsupported
+WebSocket proxy settings fall back to HTTP/SSE. HTTP fetch-based Responses handling uses Bun's
+HTTP proxy rules and does not inherit the WSS-specific `ALL_PROXY` fallback.
+
 Noncanonical Responses gateways receive Codex's client-executed `tool_search` declaration as a
 collision-safe public function tool. Matching request history and JSON/SSE function calls are
 translated back to the private `tool_search` lifecycle for the client. Canonical OpenAI forward
 keeps the native private type unchanged.
+
+For OpenCode Go at `https://opencode.ai/zen/go/v1`, requests with `authMode` other
+than `"forward"` convert plaintext Codex `agent_message` items into public user messages, preserving content parts and readable author/recipient
+metadata. This conversion leaves encrypted or unknown content unchanged and does not apply
+to other destinations. Providers using `authMode: "forward"` retain these items unchanged.
+See [Go agent messages](/reference/configuration/providers/#opencode-go-session-and-agent-messages)
+for the separate opt-in encrypted-task recovery behavior.
 
 The canonical ChatGPT Codex forward destination also normalizes two public Responses shapes that
 its stricter backend rejects: fully textual `system` messages inside `input` are appended to the
