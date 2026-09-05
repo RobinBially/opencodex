@@ -48,6 +48,8 @@ import {
 import { handleNativeChatCompletions, isNativeChatRouteEligible } from "./chat-native";
 import { parseRequestEffortRowId } from "./effort-row";
 import { parseSyntheticRowId } from "./fast-row";
+import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
+import { CODEX_RESERVE_HELPER_UNSUPPORTED_MESSAGE, isCodexReserveHelperUnsupported } from "../codex/loopback-target";
 
 type Rec = Record<string, unknown>;
 
@@ -218,6 +220,13 @@ async function handleChatCompletionsWithBudget(
     else internalBody.reasoning = next;
   }
 
+  const visionDescribeTerminal = req.headers.get("x-opencodex-vision-describe") === "1";
+  // Concrete helper targets must fail before optional stored-main credential enrichment.
+  // Unresolved combos are checked after their concrete child route is selected in Responses.
+  if (settledRoute && !settledRoute.combo && isCanonicalOpenAiForwardProvider(settledRoute.provider)
+    && isCodexReserveHelperUnsupported(config, settledRoute.modelId, logIds?.admission, visionDescribeTerminal)) {
+    return chatCompletionsErrorResponse(400, CODEX_RESERVE_HELPER_UNSUPPORTED_MESSAGE, "invalid_request_error");
+  }
   const headers = new Headers({ "content-type": "application/json" });
   for (const name of FORWARD_HEADERS) {
     if (name === "authorization" && !directRoute) continue;
@@ -284,7 +293,7 @@ async function handleChatCompletionsWithBudget(
     // Terminal vision-describe marker (roadmap 180): the bridge rebuilds
     // headers from the FORWARD_HEADERS allowlist, which would drop the raw
     // header — so the fact is detected here and carried as an option flag.
-    ...(req.headers.get("x-opencodex-vision-describe") === "1" ? { visionDescribeTerminal: true } : {}),
+    ...(visionDescribeTerminal ? { visionDescribeTerminal: true } : {}),
     translatorBudget,
     ...(logIds ? { onFirstOutput: () => recordFirstOutput(logCtx, logIds.start) } : {}),
     onNativePassthroughTerminal: status => finalizeNativeLog(httpStatusForRequestLogTerminal(status, logCtx), { terminalStatus: status, closeReason: "terminal" }),

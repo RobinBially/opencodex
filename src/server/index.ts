@@ -1843,7 +1843,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           ...admissionFields(admission),
         };
         return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => {
-          const response = await handleSearch(req, config, logCtx, turnAdmissionLease);
+          const response = await handleSearch(req, config, logCtx, turnAdmissionLease, admission);
           addFinalRequestLog(requestId, start, logCtx, response.status,
             response.status === 499 ? { closeReason: "client_cancel" } : undefined);
           return withCors(response, req, policy);
@@ -1945,7 +1945,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         // pre-translation stream + native passthrough callbacks) — do not re-wrap the
         // translated Anthropic stream here.
         return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => withCors(
-          await handleClaudeMessages(req, config, logCtx, { requestId, start, turnAdmissionLease }, policy),
+          await handleClaudeMessages(req, config, logCtx, { requestId, start, turnAdmissionLease, admission }, policy),
           req,
           policy,
         ));

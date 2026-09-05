@@ -255,6 +255,7 @@ export function codexWsUpstreamFetch(
   sseFallback: typeof globalThis.fetch,
   runtime: BunRuntimeGateInput = currentBunRuntimeIdentity(),
   onQuota?: CodexWsQuotaObserver,
+  beforeDispatch?: (headers: Headers) => void,
 ): Promise<Response> {
   const prepared = prepareCodexWsRequest(url, init);
   if (!prepared) return sseFallback(url, prepareCodexHttpInit(url, init));
@@ -283,6 +284,12 @@ export function codexWsUpstreamFetch(
   // keys on WS + originator, so callers without the tag simply keep their own
   // provenance and scheduling.)
 
+  // A local refusal is not a failed upgrade and must never enter the SSE fallback path.
+  try {
+    beforeDispatch?.(new Headers(headers));
+  } catch (error) {
+    return Promise.reject(error);
+  }
   return new Promise<Response>((resolve, reject) => {
     let ws: WebSocket;
     try {
@@ -367,10 +374,25 @@ export function codexWsUpstreamFetch(
     };
     signal?.addEventListener("abort", onAbort, { once: true });
 
-    ws.addEventListener("open", () => {
+    const onOpen = () => {
       if (settledPreOpen) return;
       clearTimeout(upgradeTimer);
       opened = true;
+      try {
+        beforeDispatch?.(new Headers(headers));
+      } catch (error) {
+        // Settle and detach before close: a synchronous close event must not resend over SSE.
+        settledPreOpen = true;
+        terminal = true;
+        cleanup();
+        ws.removeEventListener("open", onOpen);
+        ws.removeEventListener("message", onMessage);
+        ws.removeEventListener("close", onClose);
+        ws.removeEventListener("error", onError);
+        try { ws.close(); } catch { /* already closing */ }
+        reject(error);
+        return;
+      }
       sent = true;
       try {
         ws.send(frameText);
@@ -394,9 +416,9 @@ export function codexWsUpstreamFetch(
       else if (!responseCommitted && !terminal) {
         preludeTimer = setTimeout(() => failStream("codex websocket response prelude timed out"), CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS);
       }
-    });
+    };
 
-    ws.addEventListener("message", (event) => {
+    const onMessage = (event: MessageEvent) => {
       if (!controller || terminal) return;
       received = true;
       const text = typeof event.data === "string" ? event.data : "";
@@ -465,9 +487,9 @@ export function codexWsUpstreamFetch(
         try { controller.close(); } catch { /* already closed */ }
         try { ws.close(); } catch { /* already closing */ }
       }
-    });
+    };
 
-    ws.addEventListener("close", (event: unknown) => {
+    const onClose = (event: unknown) => {
       cleanup();
       if (!opened) {
         if (settledPreOpen) return;
@@ -479,10 +501,14 @@ export function codexWsUpstreamFetch(
         return;
       }
       if (sent && !terminal) failStream(closedBeforeTerminalMessage(event));
-    });
+    };
 
-    ws.addEventListener("error", () => {
+    const onError = () => {
       /* Bun always follows error with close; the close handler settles. */
-    });
+    };
+    ws.addEventListener("open", onOpen);
+    ws.addEventListener("message", onMessage);
+    ws.addEventListener("close", onClose);
+    ws.addEventListener("error", onError);
   });
 }

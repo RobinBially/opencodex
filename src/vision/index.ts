@@ -6,7 +6,9 @@ import { describeImageAnthropic } from "./anthropic-describe";
 import { describeImageRouted } from "./routed-describe";
 import { isModelVisionSidecarConsumer as isModelTextOnly, modelAcceptsImageInput } from "./eligibility";
 import { normalizeVisionReasoningForModel } from "./reasoning";
-import type { CodexAuthContext } from "../codex/auth-context";
+import type { CodexAuthContext, CodexAuthPolicyConfig } from "../codex/auth-context";
+import { isCodexReserveRequestEligible } from "../codex/loopback-target";
+import type { DataPlaneAdmission } from "../server/auth-cors";
 import { resolveSidecarAuth } from "../sidecar/auth";
 import type { ResolvedOpenAiForwardSidecar } from "../providers/openai-sidecar";
 import type { SidecarOutcomeRecorder } from "../web-search/executor";
@@ -295,6 +297,7 @@ export function planVisionSidecar(
   modelId: string,
   parsed: OcxParsedRequest,
   openAiSidecar?: ResolvedOpenAiForwardSidecar,
+  options: { admission?: Pick<DataPlaneAdmission, "source">; codexAuthPolicy?: CodexAuthPolicyConfig } = {},
 ): VisionPlan | undefined {
   if (!isModelTextOnly(provider, modelId)) return undefined;
   if (!messagesHaveImage(parsed)) return undefined;
@@ -361,6 +364,7 @@ export function planVisionSidecar(
     backend,
     forwardSidecar: openAiSidecar,
     settings: {
+      ...(isCodexReserveRequestEligible(options.codexAuthPolicy ?? config, options.admission) ? { reserveCompatibility: true } : {}),
       model,
       reasoning: normalizeVisionReasoningForModel(model, cfg.reasoning) ?? DEFAULT_REASONING,
         timeoutMs: resolveVisionTimeoutMs(cfg.timeoutMs),

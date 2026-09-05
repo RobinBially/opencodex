@@ -148,6 +148,8 @@ import { describeImagesInPlace, isModelTextOnly, planVisionSidecar, resolveOpenA
 import { createAdapterEventQueue, preflightAdapterEvents, type AdapterEventQueue } from "../../adapters/run-turn-queue";
 import {
   applyCodexAuthContextToProvider,
+  createCodexReserveDispatchGuard,
+  unwrapUpstreamRetryEvidenceError,
   codexPoolAffinityKey,
   CodexAccountCooldownError,
   CodexAuthContextError,
@@ -163,6 +165,7 @@ import {
   releaseCodexAuthContextProbeLease,
   stripCodexRuntimeProviderFields,
   type CodexAuthContext,
+  type CodexAuthPolicyConfig,
 } from "../../codex/auth-context";
 import {
   entitledCodexAccountIdsForModel,
@@ -206,6 +209,7 @@ import type { DataPlaneAdmission } from "../auth-cors";
 import { createTranslatorBudget, isTranslatorBudgetExceededError, type TranslatorBudget } from "../../lib/translator-budget";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
+import { CODEX_RESERVE_HELPER_UNSUPPORTED_MESSAGE, isCodexReserveHelperUnsupported } from "../../codex/loopback-target";
 import { providerContextCap } from "../../providers/context-cap";
 import {
   fastPolicyForModel,
@@ -984,6 +988,9 @@ interface CodexPoolAccountRetryArgs {
   parsed: OcxParsedRequest;
   logCtx: RequestLogContext;
   options: {
+    admission?: DataPlaneAdmission;
+    codexAuthPolicy?: CodexAuthPolicyConfig;
+    visionDescribeTerminal?: boolean;
     abortSignal?: AbortSignal;
     onCodexAuthContextResolved?: (ctx: CodexAuthContext) => void;
     deferCodexResetDerivedCooldown?: boolean;
@@ -1180,6 +1187,8 @@ async function retryCodexPoolOnAlternateAccount(
         "pool",
         {
           excludeAccountId: firstAuthCtx.accountId,
+          admission: options.admission,
+          codexAuthPolicy: options.codexAuthPolicy,
           modelId: route.modelId,
           requestScopedMainCredential: hasForwardableCodexBearer(req.headers, config),
           beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease),
@@ -1251,7 +1260,7 @@ async function retryCodexPoolOnAlternateAccount(
   // Only a combo reset-derived outcome is deferred. Retry-After, defaults, and
   // ordinary requests must block the first account before the alternate send.
   if (!deferFirstOutcome) recordFirstOutcome();
-  const retryHeaders = headersForCodexAuthContext(req.headers, retryAuthCtx, config);
+  const retryHeaders = headersForCodexAuthContext(req.headers, retryAuthCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission);
   const retryProvider = applyCodexAuthContextToProvider(
     stripCodexRuntimeProviderFields(route.provider),
     retryAuthCtx,
@@ -1321,6 +1330,8 @@ async function retryCodexPoolOnAlternateAccount(
             providerName: route.providerName,
             modelId: route.modelId,
             onCodexWsQuota: codexWsQuotaObserver(retryAuthCtx, route.provider),
+            beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
+              ? createCodexReserveDispatchGuard(retryAuthCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
           }),
           // Credential-bearing forward send: never follow a redirect into a
           // dead-host rejection after the credential was seen (#914).
@@ -1499,6 +1510,8 @@ export interface ConsumedComboFailure {
 
 
 export interface HandleResponsesOptions {
+  /** Original live policy owner; separate from caller-specific routing/sidecar snapshots. */
+  codexAuthPolicy?: CodexAuthPolicyConfig;
   turnAdmissionLease?: AdmissionLease;
   /**
    * How the caller proved data-plane admission (#1686).
@@ -1877,6 +1890,8 @@ async function resolveResponsesCodexAuth(
     let authCtx: CodexAuthContext;
     if (route.codexAccountMode) {
       authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode, {
+        admission: options.admission,
+        codexAuthPolicy: options.codexAuthPolicy,
         accountId: route.codexAccountId,
         modelId: route.modelId,
         substituteMainCredentialForDirect: substituteMainCredential,
@@ -1908,16 +1923,20 @@ async function resolveResponsesCodexAuth(
     // This resolver also builds a synthetic main context for unrelated keyed routes. Only
     // the actual Codex-forward transport consumes main quota; provider names are not proof
     // (custom-named canonical-forward providers must retain the same protection).
-    const mainPolicyConfig = isCanonicalOpenAiForwardProvider(route.provider) ? config : undefined;
+    const mainPolicyConfig = isCanonicalOpenAiForwardProvider(route.provider)
+      ? options.codexAuthPolicy ?? config : undefined;
     const headers = await materializeCodexUpstreamAuthAsync(req.headers, authCtx, {
+      admission: options.admission,
       config: mainPolicyConfig,
+      modelId: route.modelId,
+      beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease),
       substituteMainCredential,
       signal: options.abortSignal,
       nativeMainRefreshDependencies: options.nativeMainRefreshDependencies,
     });
     // Awaiting even a cached materialization yields. Preserve the policy error if the live
     // quota/config changed during that yield, before usability could mislabel it as reauth.
-    headersForCodexAuthContext(headers, authCtx, mainPolicyConfig);
+    headersForCodexAuthContext(headers, authCtx, mainPolicyConfig, route.modelId, options.admission);
     if (!isCodexAuthContextUsable(authCtx, config)) {
       releaseCodexAuthContextProbeLease(authCtx);
       return {
@@ -2018,7 +2037,9 @@ async function refreshPoolForwardAuth(args: {
       route.codexAccountMode,
     );
     const headers = await materializeCodexUpstreamAuthAsync(req.headers, refreshedAuthCtx, {
-      config,
+      admission: options.admission,
+      config: options.codexAuthPolicy ?? config,
+      modelId: route.modelId,
       substituteMainCredential,
       signal: options.abortSignal,
       nativeMainRefreshDependencies: options.nativeMainRefreshDependencies,
@@ -2077,7 +2098,9 @@ async function refreshNativeMainForwardAuth(args: {
       route.codexAccountMode,
     );
     const headers = await materializeCodexUpstreamAuthAsync(req.headers, refreshedAuthCtx, {
-      config,
+      admission: options.admission,
+      config: options.codexAuthPolicy ?? config,
+      modelId: route.modelId,
       substituteMainCredential,
       signal: options.abortSignal,
       nativeMainRefreshDependencies: options.nativeMainRefreshDependencies,
@@ -2805,7 +2828,13 @@ export async function handleResponses(
   const ownsBudget = options.translatorBudget === undefined;
   const translatorBudget = options.translatorBudget ?? createTranslatorBudget();
   try {
-    const response = await handleResponsesInner(req, config, logCtx, { ...options, translatorBudget });
+    const response = await handleResponsesInner(req, config, logCtx, {
+      ...options,
+      // Capture before combo replay rebuilds the Request headers; children carry options.
+      visionDescribeTerminal: options.visionDescribeTerminal === true
+        || req.headers.get("x-opencodex-vision-describe") === "1",
+      translatorBudget,
+    });
     return ownsBudget ? finalizeOwnedTranslatorBudget(response, translatorBudget) : response;
   } catch (error) {
     if (ownsBudget) translatorBudget.dispose();
@@ -3381,6 +3410,12 @@ async function handleResponsesInner(
   }
 
   if (options.abortSignal?.aborted) return clientCancelledResponse();
+  // Resolve aliases/combo children before refusing helpers; do not spend main auth or host budget.
+  if (isCanonicalOpenAiForwardProvider(route.provider)
+    && isCodexReserveHelperUnsupported(options.codexAuthPolicy ?? config, route.modelId,
+      options.admission, options.visionDescribeTerminal === true)) {
+    return formatErrorResponse(400, "invalid_request_error", CODEX_RESERVE_HELPER_UNSUPPORTED_MESSAGE);
+  }
   // Refuse an input that cannot plausibly fit the model context window before spending auth,
   // circuit budget, or upstream bandwidth on a turn the provider will reject anyway (#1412).
   //
@@ -3761,6 +3796,8 @@ async function handleResponsesInner(
         req.headers,
         config,
         {
+          admission: options.admission,
+          codexAuthPolicy: options.codexAuthPolicy,
           // Account-qualified native routes are passthrough, so their in-turn helper is vision.
           // Scope its cooldown and outcome to the helper model, not the routed text model.
           ...(route.codexAccountId !== undefined
@@ -3790,11 +3827,12 @@ async function handleResponsesInner(
   // call must never plan another describe. The flag arrives from the Chat
   // surface (whose bridge rebuilds headers) or as the raw header for native
   // Responses callers. Marked + text-only routed model → strip, depth cap 1.
-  const visionDescribeTerminal = options.visionDescribeTerminal === true
-    || req.headers.get("x-opencodex-vision-describe") === "1";
+  const visionDescribeTerminal = options.visionDescribeTerminal === true;
   const visionPlan = visionDescribeTerminal
     ? undefined
-    : planVisionSidecar(config, route.provider, route.modelId, parsed, openAiSidecar);
+    : planVisionSidecar(config, route.provider, route.modelId, parsed, openAiSidecar, {
+      admission: options.admission, codexAuthPolicy: options.codexAuthPolicy,
+    });
   const recordSidecarOutcome = openAiSidecar?.recordOutcome;
   if (visionPlan) {
     await describeImagesInPlace(
@@ -4238,6 +4276,15 @@ async function handleResponsesInner(
         releaseCodexAuthContextProbeLease(authCtx);
         return clientCancelledResponse();
       }
+      const localRefusal = mapCodexAuthContextErrorToResponse(unwrapUpstreamRetryEvidenceError(err), {
+        now: Date.now(), accountSelector: route.codexAccountNamespace,
+      });
+      if (localRefusal) {
+        releaseUpstreamHostAdmission(hostAdmissionLease);
+        hostAdmissionLease = null;
+        releaseCodexAuthContextProbeLease(authCtx);
+        return localRefusal;
+      }
       const outcome = classifyTransportFailureKind(err);
       // Host-level evidence stands regardless of pool membership: a direct
       // forward send has no pool accounting, but the reachability failure is
@@ -4290,6 +4337,8 @@ async function handleResponsesInner(
               providerName: route.providerName,
               modelId: route.modelId,
               onCodexWsQuota: codexWsQuotaObserver(authCtx, route.provider),
+              beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
+                ? createCodexReserveDispatchGuard(authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
             }),
             route.provider.authMode === "forward")
             // Every real attempt response — including an intermediate 5xx the
@@ -4364,6 +4413,8 @@ async function handleResponsesInner(
                 providerName: route.providerName,
                 modelId: route.modelId,
                 onCodexWsQuota: codexWsQuotaObserver(authCtx, route.provider),
+                beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
+                  ? createCodexReserveDispatchGuard(authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
               }),
               route.provider.authMode === "forward")
               .then(response => {
@@ -4466,6 +4517,8 @@ async function handleResponsesInner(
               providerName: route.providerName,
               modelId: route.modelId,
               onCodexWsQuota: codexWsQuotaObserver(authCtx, route.provider),
+              beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
+                ? createCodexReserveDispatchGuard(authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
             }),
             codex401ReplayKind === "stored" ? options.onStoredPool401ReplayDispatched : undefined,
           ),
@@ -4573,6 +4626,8 @@ async function handleResponsesInner(
                 providerName: route.providerName,
                 modelId: route.modelId,
                 onCodexWsQuota: codexWsQuotaObserver(authCtx, route.provider),
+                beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
+                  ? createCodexReserveDispatchGuard(authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
               }),
               route.provider.authMode === "forward")
               .then(res => {
@@ -4636,6 +4691,8 @@ async function handleResponsesInner(
                 providerName: route.providerName,
                 modelId: route.modelId,
                 onCodexWsQuota: codexWsQuotaObserver(authCtx, route.provider),
+                beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
+                  ? createCodexReserveDispatchGuard(authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
               }),
               route.provider.authMode === "forward")
               .then(res => {
@@ -5355,7 +5412,9 @@ async function handleResponsesInner(
   //   - runTurn: image bridge may run (it supports runTurn); web-search is skipped so runTurn
   //     can proceed for web-search-only turns
   const wsPlan = !routedCompaction
-    ? planWebSearch(config, parsed, false, route.provider, route.modelId, openAiSidecar)
+    ? planWebSearch(config, parsed, false, route.provider, route.modelId, openAiSidecar, {
+      admission: options.admission, codexAuthPolicy: options.codexAuthPolicy,
+    })
     : undefined;
   const imgPlan = !routedCompaction ? await planImageBridge(config, parsed, route.provider) : undefined;
   const vidPlan = !routedCompaction ? await planVideoBridge(config, parsed, route.provider) : undefined;

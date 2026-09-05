@@ -75,7 +75,15 @@ import {
 } from "../internal/catalog-writer";
 import { codexRuntimeStatePath } from "../runtime";
 import { accountBoundNativeDisplayName, CODEX_ACCOUNT_BOUND_CATALOG_KIND, trustedAccountBoundNativeCatalogSlug, visibleCodexAccountSelectors } from "./account-models";
-import { ACCOUNT_GATED_NATIVE_OPENAI_MODELS } from "./native-models";
+import { ACCOUNT_GATED_NATIVE_OPENAI_MODELS, NATIVE_RESERVE_MODEL } from "./native-models";
+import { observedReserveCatalogSource } from "./metadata";
+import {
+  createReserveCatalogProjection,
+  isReserveCatalogProjection,
+  RESERVE_LUNA_METADATA_SOURCE,
+  RESERVE_SOURCE_CATALOG_FIELD,
+  type ReserveCatalogProjection,
+} from "./reserve";
 
 export const MAX_SPAWN_AGENT_MODEL_OVERRIDES = 5;
 
@@ -437,6 +445,8 @@ export interface ObservedCatalogEntryBuildInput {
   readonly accountNativeSlugs?: readonly string[];
   /** Per-selector account ids; unknown observations must not be copied to unrelated accounts. */
   readonly accountNativeSlugsBySelector?: ReadonlyMap<string, readonly string[]>;
+  /** Codex-only manual selector metadata; deliberately independent of live permission. */
+  readonly reserve?: ReserveCatalogProjection;
 }
 
 /** Build entries with the process-observed Codex feature state. */
@@ -493,6 +503,7 @@ export function buildCatalogEntriesFromObservedState({
   openaiContextCap,
   accountNativeSlugs,
   accountNativeSlugsBySelector,
+  reserve,
 }: ObservedCatalogEntryBuildInput): RawEntry[] {
   // Codex's models-manager sorts by `priority` ASC and advertises the first 5 picker-visible
   // models to spawn_agent (sort_by_key(priority) + MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT=5). Catalog
@@ -589,15 +600,17 @@ export function buildCatalogEntriesFromObservedState({
     const selectorNativeSlugs = accountNativeSlugsBySelector?.get(selector)
       ?? accountNativeSlugs
       ?? gptSlugs;
-    const accountNativeEntries = selectorNativeSlugs.map(slug => (
+    const accountNativeEntries = selectorNativeSlugs.filter(slug => slug !== NATIVE_RESERVE_MODEL).map(slug => (
       nativeEntriesBySlug.get(slug)
         ?? deriveEntry(template, slug, "OpenAI native model (Codex OAuth passthrough).", 9, undefined, new Set(), openaiContextCap)
     ));
+    if (reserve?.mainSelectors.includes(selector)) accountNativeEntries.push(reserve.source);
     for (const [nativeIndex, native] of accountNativeEntries.entries()) {
       const nativeSlug = String(native.slug);
       if (disabledNativeAccountSlugs.has(nativeSlug)) continue;
       const e = JSON.parse(JSON.stringify(native)) as RawEntry;
       const catalogSlug = `${selector}/${nativeSlug}`;
+      if (nativeSlug === NATIVE_RESERVE_MODEL && disabledNativeAccountSlugs.has(catalogSlug)) continue;
       e.slug = catalogSlug;
       e.display_name = accountBoundNativeDisplayName(selector, native);
       // Codex ignores this OpenCodex extension; preserve the native comp_hash unchanged.
@@ -671,6 +684,7 @@ export function buildCatalogEntriesFromObservedState({
   }
   return applyMultiAgentMode(out, multiAgentMode, multiAgentV2Enabled, {
     keepNativeChatGptOnV1,
+    preserveDefaultMultiAgentVersion: isReserveCatalogProjection,
   });
 }
 
@@ -964,7 +978,7 @@ export function mergeCatalogEntriesFromObservedState({
       const preserved = normalizeServiceTiers({ ...m, priority: nativePriority(slug, m.priority) });
       // Older natives kept from disk still need the mock top tiers (max + ultra always
       // for subagent max spawns; wire-clamped to the model's real top rung).
-      if (!isGpt56NativeSlug(slug)) ensureUltraReasoningLevel(preserved);
+      if (!isGpt56NativeSlug(slug) && slug !== NATIVE_RESERVE_MODEL) ensureUltraReasoningLevel(preserved);
       return preserved;
     })
     : [];
@@ -999,6 +1013,9 @@ export function mergeCatalogEntriesFromObservedState({
     typeof entry.slug === "string" ? [[entry.slug, entry] as const] : []
   ));
   const alignedAccountBoundEntries = detachedAccountBoundEntries.map(entry => {
+    // The explicit Reserve source is already chosen (actual row or documented Luna adaptation).
+    // A generic native merge must not replace its provenance or capability ladder.
+    if (isReserveCatalogProjection(entry)) return entry;
     const nativeSlug = trustedAccountBoundNativeCatalogSlug(entry);
     const source = nativeSlug === undefined ? undefined : nativeSourceBySlug.get(nativeSlug);
     if (!source) return entry;
@@ -1106,17 +1123,18 @@ export function mergeCatalogEntriesFromObservedState({
   }));
   for (const slug of policy.nativeBackfillSlugs) observedNativeSlugs.add(slug);
   const mergedEntries = [...native, ...managedEntries].map(m => {
-    const normalized = normalizeServiceTiers(m);
-    if (!isNativeAliasCatalogEntry(normalized)) applyNativeOpenAiContextOverride(normalized, openaiContextCap);
+    const reserveProjection = isReserveCatalogProjection(m);
+    const normalized = reserveProjection ? m : normalizeServiceTiers(m);
+    if (!reserveProjection && !isNativeAliasCatalogEntry(normalized)) applyNativeOpenAiContextOverride(normalized, openaiContextCap);
     const exactCombo = isExactComboCatalogEntry(m, exactComboSlugs);
-    const e = ensureStrictCatalogFields(normalized, {
+    const e = reserveProjection ? normalized : ensureStrictCatalogFields(normalized, {
       preserveExactInputModalities: exactCombo,
       isRouted: finalRoutedEntrySet.has(m),
     });
     // Mock-max universality (260709): preserved routed entries from disk may predate
     // the max rung — ensure it here so subagent max spawns validate on every
     // reasoning-capable entry. max only: 5.6 exact ladders (luna: no ultra) stay intact.
-    if (!exactCombo) {
+    if (!exactCombo && !reserveProjection) {
       const levels = Array.isArray(e.supported_reasoning_levels)
         ? e.supported_reasoning_levels as Array<{ effort?: string }>
         : [];
@@ -1141,7 +1159,7 @@ export function mergeCatalogEntriesFromObservedState({
     applyNativeVisibility(mergedEntries, disabledModels, alignedAccountBoundEntries.length > 0, observedNativeSlugs),
     multiAgentMode,
     multiAgentV2Enabled,
-    { keepNativeChatGptOnV1 },
+    { keepNativeChatGptOnV1, preserveDefaultMultiAgentVersion: isReserveCatalogProjection },
   );
   for (const entry of versionedEntries) {
     const kind = entry.opencodex_catalog_kind;
@@ -1629,6 +1647,36 @@ function writeRetainedCatalogSync({
       trustedAccountBoundNativeCatalogSlug(entry) !== undefined),
   ];
   const accountTargets = new Map(codexAccountNamespaceEntries(config));
+  const reserveMainSelectors = accountSelectors.filter(selector =>
+    isMainCodexAccountTarget(accountTargets.get(selector) ?? ""));
+  // The active file can own a bare source even when the bundled catalog is the build base.
+  // A previously clamped qualified projection must not shorten a retained genuine ladder.
+  const reserveObservations = [
+    ...(onDiskCatalog?.models ?? []),
+    ...(read.modelsCache?.models ?? []),
+    ...(catalog.models ?? []),
+  ];
+  const retainedReserve = onDiskCatalog?.[RESERVE_SOURCE_CATALOG_FIELD];
+  const retainedReserveSource = retainedReserve && typeof retainedReserve === "object" && !Array.isArray(retainedReserve)
+    ? observedReserveCatalogSource([retainedReserve as RawEntry], [])
+    : null;
+  const observedReserveSource = observedReserveCatalogSource(
+    // Cache invalidation carries historical bare observations alongside emitted models.
+    // Only unmarked observations are fresh enough to supersede the retained source.
+    reserveObservations.filter(entry => entry.slug === NATIVE_RESERVE_MODEL
+      && entry.opencodex_account_observed_native === undefined), reserveMainSelectors,
+  ) ?? retainedReserveSource ?? observedReserveCatalogSource(reserveObservations, reserveMainSelectors);
+  // This root is read only by OCX. Upstream ModelsResponse ignores unknown root fields.
+  // Retain before final runtime clamping: an omitted row must not turn into Luna next sync.
+  if (observedReserveSource) catalog[RESERVE_SOURCE_CATALOG_FIELD] = structuredClone(observedReserveSource);
+  else delete catalog[RESERVE_SOURCE_CATALOG_FIELD];
+  const lunaSource = upstreamNativeEntry(RESERVE_LUNA_METADATA_SOURCE);
+  const reserve = createReserveCatalogProjection(
+    config,
+    reserveMainSelectors,
+    observedReserveSource,
+    lunaSource ? finishUpstreamNativeEntry(lunaSource, 9, openaiContextCap) : null,
+  );
   const accountNativeSlugsBySelector = accountSelectors.length > 0
     ? new Map([...accountBoundNativeOpenAiSlugsBySelector(config, observedAccountNativeEntries)].map(([selector, slugs]) => {
       const target = accountTargets.get(selector);
@@ -1710,6 +1758,7 @@ function writeRetainedCatalogSync({
       openaiContextCap,
       accountNativeSlugs,
       accountNativeSlugsBySelector,
+      reserve,
     }).filter(entry => trustedAccountBoundNativeCatalogSlug(entry) !== undefined)
     : [];
   catalog.models = mergeCatalogEntriesFromObservedState({
