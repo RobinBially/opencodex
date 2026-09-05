@@ -89,6 +89,22 @@ host and port over a LAN IP or an alias.
 | **Storage** | Read-only CODEX_HOME disk breakdown (sessions, archives, DBs, attachments). Optional archived cleanup: preview the oldest N%, then quarantine to `CODEX_HOME/.trash` (default) or permanently delete behind an explicit checkbox. **Auto-cleanup policy** is opt-in and **default OFF** (`storageCleanupPolicy.enabled`); configure threshold/target/schedule/mode on the Storage page, or trigger **Run now**. Quarantined entries can be restored from the Storage page (JSONL + threads). Active sessions stay read-only. Cleanup and restore are refused while Codex holds the newest/active `state_*.sqlite` locked. |
 | **Stop** | Gracefully stop the proxy and installed background service, restore native Codex, and exit (`POST /api/stop`). On Windows with the Task Scheduler backend the dashboard refuses and asks you to run `ocx stop` instead: that wrapper can respawn the proxy after the task ends, and only a stop running outside this process can verify the restart window before restoring your client config. Nothing is changed when it refuses. |
 
+### Filtering request logs
+
+Logs filters combine surface, intercepted requests, provider, exact model, status, time,
+speed, and conversation ID over the currently loaded request ring. Provider and model
+choices also include fallback attempts; model matching ignores case and surrounding spaces
+but does not match partial names. Choices that disappear from the ring reset to All.
+
+Time windows cover the last 15 minutes, hour, or day and refresh every 30 seconds while the
+Logs tab is active, even with auto-refresh off. Speed uses output tokens per second over the
+full request duration: below 15, 15 to below 50, or at least 50. Unavailable speed values are
+excluded when a speed filter is active. Success means 2xx; errors mean 4xx or 5xx.
+
+Active filters show the matching count out of the loaded total. Reset filters restores all
+rows; “No matching requests” differs from an empty log ring. Use arrow keys or Home/End in
+the surface selector. These controls do not query historical records beyond the loaded ring.
+
 ### Linking to a section
 
 There is a single layout, so there is no layout switch to configure. Dashboard sections are

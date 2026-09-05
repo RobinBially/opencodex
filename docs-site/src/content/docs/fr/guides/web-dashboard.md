@@ -57,6 +57,14 @@ gestionnaire de mots de passe.
 | **Stockage** | Consultez en lecture seule la répartition du disque de CODEX_HOME — sessions, archives, bases de données et pièces jointes. Pour le nettoyage facultatif des archives, prévisualisez les N % les plus anciennes, puis placez-les en quarantaine dans `CODEX_HOME/.trash` (par défaut) ou supprimez-les définitivement après avoir coché une case explicite. **La stratégie de nettoyage automatique** est facultative et **désactivée par défaut** (`storageCleanupPolicy.enabled`) ; configurez son seuil, sa cible, sa planification et son mode sur la page **Stockage**, ou lancez **Exécuter maintenant**. Les entrées mises en quarantaine peuvent être restaurées depuis cette page (JSONL et fils). Les sessions actives restent en lecture seule. Le nettoyage et la restauration sont refusés tant que Codex verrouille le fichier `state_*.sqlite` le plus récent ou actif. |
 | **Arrêter** | Arrêtez proprement le proxy et le service d'arrière-plan installé, restaurez Codex natif et quittez (`POST /api/stop`). Sur Windows avec le backend Planificateur de tâches, le tableau de bord refuse et vous demande d'exécuter `ocx stop` : le wrapper peut relancer le proxy après la fin de la tâche, et seul un stop exécuté hors du proxy peut vérifier cette fenêtre de redémarrage avant de restaurer votre configuration client. Rien n'est modifié en cas de refus. |
 
+### Filtrer les requêtes
+
+Les filtres combinent interface, requêtes interceptées, fournisseur, modèle exact, statut, période, vitesse et identifiant de conversation dans le journal chargé. Les choix incluent les tentatives de repli ; les modèles ignorent la casse et les espaces externes, sans correspondance partielle. Un choix disparu revient à Tous.
+
+Les périodes de 15 minutes, une heure et un jour évoluent toutes les 30 secondes dans l’onglet Logs, même sans actualisation automatique. La vitesse mesure les jetons de sortie par seconde sur toute la durée : moins de 15, de 15 à moins de 50, ou au moins 50 ; les valeurs indisponibles sont exclues quand ce filtre est actif. Réussite : 2xx ; erreur : 4xx/5xx.
+
+Le compteur compare les résultats au total chargé ; la réinitialisation restaure toutes les lignes. Aucun résultat diffère d’un journal vide. Flèches et Home/End pilotent le sélecteur d’interface. Aucun historique au-delà du journal chargé n’est interrogé.
+
 ### Liens directs vers une section
 
 Il n'existe qu'une seule mise en page, donc aucun commutateur de disposition n'est à configurer. Les sections

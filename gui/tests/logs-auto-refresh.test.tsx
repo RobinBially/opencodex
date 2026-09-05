@@ -571,3 +571,337 @@ test("Logs: an intercepted helper row is badged and filterable", async () => {
 
   await act(async () => { root.unmount(); });
 });
+
+// Rich-filter integration uses the same resource/virtualizer harness as the polling tests.
+function visibleRequestIds(container: HTMLElement): string[] {
+  return [...container.querySelectorAll(".logs-table tbody .log-reqid")].map(node => node.textContent ?? "");
+}
+
+async function changeLogSelect(container: HTMLElement, label: string, value: string): Promise<void> {
+  const select = container.querySelector<HTMLSelectElement>(`.logs-filter-container select[aria-label="${label}"]`);
+  expect(select).not.toBeNull();
+  await act(async () => {
+    select!.value = value;
+    select!.dispatchEvent(new testWindow.Event("change", { bubbles: true }));
+  });
+  await flushMicrotasks();
+}
+
+async function enterConversation(container: HTMLElement, value: string): Promise<void> {
+  const input = container.querySelector<HTMLInputElement>('.logs-filter-container input[type="search"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(testWindow.HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new testWindow.Event("input", { bubbles: true }));
+  });
+  await flushMicrotasks();
+  expect(input.value).toBe(value);
+}
+
+function serveLogSnapshot(readRows: () => unknown[], onRequest?: () => void): void {
+  globalThis.fetch = (async input => {
+    const url = String(input);
+    if (url.includes("/api/settings")) return jsonResponse({ timeZone: "UTC" });
+    if (!url.includes("/api/logs")) return jsonResponse({});
+    onRequest?.();
+    return jsonResponse(readRows());
+  }) as typeof fetch;
+}
+
+// Happy DOM owns window timers separately. Route only the filter's interval into
+// Bun's existing fake clock; leave resource/virtualizer timers on their own paths.
+function trackFilterClock() {
+  const originalSet = window.setInterval.bind(window);
+  const originalClear = window.clearInterval.bind(window);
+  const live = new Map<number, ReturnType<typeof globalThis.setInterval>>();
+  const started: number[] = [];
+  const cleared: number[] = [];
+  let nextId = -1;
+  const setSpy = jest.spyOn(window, "setInterval").mockImplementation((handler, delay, ...args) => {
+    if (delay !== 30_000 || typeof handler !== "function") return originalSet(handler, delay, ...args);
+    const id = nextId--;
+    live.set(id, globalThis.setInterval(() => handler(...args), delay));
+    started.push(id);
+    return id;
+  });
+  const clearSpy = jest.spyOn(window, "clearInterval").mockImplementation(id => {
+    const timer = id === undefined ? undefined : live.get(id);
+    if (timer === undefined) return originalClear(id);
+    globalThis.clearInterval(timer);
+    live.delete(id!);
+    cleared.push(id!);
+  });
+  return {
+    live, started, cleared,
+    restore() {
+      for (const timer of live.values()) globalThis.clearInterval(timer);
+      setSpy.mockRestore();
+      clearSpy.mockRestore();
+    },
+  };
+}
+
+test("Logs: rich controls intersect rows while options retain the unfiltered ring", async () => {
+  const matching = {
+    ...sampleLog, requestId: "match", model: "model-a", status: 500,
+    shadowCallRewrittenFrom: "helper-model",
+  };
+  const rows = [
+    { ...matching, requestId: "other-provider", provider: "xai" },
+    { ...matching, requestId: "other-model", model: "model-a-plus" },
+    { ...matching, requestId: "other-status", status: 200 },
+    { ...matching, requestId: "not-intercepted", shadowCallRewrittenFrom: undefined },
+    { ...matching, requestId: "other-surface", surface: "claude" },
+    matching,
+  ];
+  serveLogSnapshot(() => rows);
+  const { root, container } = await mountLogs();
+  try {
+    await flushMicrotasks();
+    expect(visibleRequestIds(container)).toEqual([
+      "match", "other-surface", "not-intercepted", "other-status", "other-model", "other-provider",
+    ]);
+    await act(async () => { container.querySelector<HTMLButtonElement>("#logs-surface-codex")!.click(); });
+    await changeLogSelect(container, "Provider", "openai");
+    await changeLogSelect(container, "Model", "model-a");
+    await changeLogSelect(container, "Status", "errors");
+    const intercepted = container.querySelector<HTMLInputElement>('.logs-filter-container input[type="checkbox"]')!;
+    await act(async () => { intercepted.click(); });
+    expect(visibleRequestIds(container)).toEqual(["match"]);
+    expect(container.querySelector(".logs-filter-status")?.textContent).toContain("Showing 1 of 6");
+    expect([...container.querySelectorAll<HTMLOptionElement>('select[aria-label="Model"] option')].map(option => option.value))
+      .toEqual(["", "model-a", "model-a-plus"]);
+    expect([...container.querySelectorAll<HTMLOptionElement>('select[aria-label="Provider"] option')].map(option => option.value))
+      .toEqual(["", "openai", "xai"]);
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+});
+
+test("Logs: a relative-time row expires with an unchanged snapshot and auto-refresh off", async () => {
+  const clock = trackFilterClock();
+  let requests = 0;
+  const rows = [{ ...sampleLog, timestamp: Date.now() - 15 * 60_000 + 1000 }];
+  serveLogSnapshot(() => rows, () => requests++);
+  let mounted: Awaited<ReturnType<typeof mountLogs>> | undefined;
+  try {
+    mounted = await mountLogs();
+    const { container } = mounted;
+    await flushMicrotasks();
+    expect(clock.live.size).toBe(0);
+    await changeLogSelect(container, "Time", "15m");
+    await act(async () => { container.querySelector<HTMLInputElement>('.logs-auto-refresh input')!.click(); });
+    await flushMicrotasks();
+    const pausedRequests = requests;
+    expect(visibleRequestIds(container)).toEqual(["req-1"]);
+    expect(clock.live.size).toBe(1);
+    await act(async () => { jest.advanceTimersByTime(30_000); });
+    await flushMicrotasks();
+    expect(visibleRequestIds(container)).toEqual([]);
+    expect(container.textContent).toContain("No matching requests.");
+    expect(container.textContent).not.toContain("No requests yet.");
+    expect(container.querySelector(".logs-filter-status")?.textContent).toContain("Showing 0 of 1");
+    expect(requests).toBe(pausedRequests);
+  } finally {
+    try {
+      if (mounted) await act(async () => { mounted!.root.unmount(); });
+    } finally {
+      clock.restore();
+    }
+  }
+});
+
+test("Logs: relative clock is replaced on window changes and cleared on All, Debug and unmount", async () => {
+  const clock = trackFilterClock();
+  serveLogSnapshot(() => [sampleLog]);
+  let mounted: Awaited<ReturnType<typeof mountLogs>> | undefined;
+  let unmounted = false;
+  try {
+    mounted = await mountLogs();
+    const { root, container } = mounted;
+    await flushMicrotasks();
+    expect(clock.started).toEqual([]);
+    await changeLogSelect(container, "Time", "15m");
+    const first = clock.started[0]!;
+    expect(clock.live.has(first)).toBe(true);
+    await changeLogSelect(container, "Time", "1h");
+    expect(clock.cleared).toEqual([first]);
+    expect(clock.live.size).toBe(1);
+    await changeLogSelect(container, "Time", "all");
+    expect(clock.live.size).toBe(0);
+    expect(clock.cleared).toEqual(clock.started);
+    await changeLogSelect(container, "Time", "24h");
+    expect(clock.live.size).toBe(1);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("#logs-tab-debug")!.click();
+      window.dispatchEvent(new testWindow.Event("hashchange"));
+    });
+    await flushMicrotasks();
+    expect(container.querySelector("#logs-tab-debug")?.getAttribute("aria-selected")).toBe("true");
+    expect(clock.live.size).toBe(0);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("#logs-tab-logs")!.click();
+      window.dispatchEvent(new testWindow.Event("hashchange"));
+    });
+    await flushMicrotasks();
+    expect(container.querySelector("#logs-tab-logs")?.getAttribute("aria-selected")).toBe("true");
+    expect(clock.started).toHaveLength(4);
+    expect(clock.live.size).toBe(1);
+    await act(async () => { root.unmount(); });
+    unmounted = true;
+    expect(clock.live.size).toBe(0);
+    expect(clock.cleared).toEqual(clock.started);
+  } finally {
+    try {
+      if (!unmounted && mounted) await act(async () => { mounted!.root.unmount(); });
+    } finally {
+      clock.restore();
+    }
+  }
+});
+
+test("Logs: ring rollover clears only vanished model and provider selections", async () => {
+  let rows = [{ ...sampleLog, model: "model-a", status: 500, conversationId: "conversation-a" }];
+  serveLogSnapshot(() => rows);
+  const { root, container } = await mountLogs();
+  try {
+    await flushMicrotasks();
+    await changeLogSelect(container, "Model", "model-a");
+    await changeLogSelect(container, "Provider", "openai");
+    await changeLogSelect(container, "Status", "errors");
+    await changeLogSelect(container, "Time", "1h");
+    await enterConversation(container, "conversation-a");
+    const select = (label: string) => container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!;
+    rows = [{ ...rows[0]!, model: "model-b" }];
+    await advanceSilentRefresh();
+    expect(select("Model").value).toBe("");
+    expect(select("Provider").value).toBe("openai");
+    expect(visibleRequestIds(container)).toEqual(["req-1"]);
+    await changeLogSelect(container, "Model", "model-b");
+    rows = [{ ...rows[0]!, provider: "xai" }];
+    await advanceSilentRefresh();
+    expect(select("Provider").value).toBe("");
+    expect(select("Model").value).toBe("model-b");
+    expect(select("Status").value).toBe("errors");
+    expect(select("Time").value).toBe("1h");
+    expect(container.querySelector<HTMLInputElement>('.logs-filter-container input[type="search"]')!.value).toBe("conversation-a");
+    expect(visibleRequestIds(container)).toEqual(["req-1"]);
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+});
+
+test("Logs: detail conversation action and reset use the same filter state", async () => {
+  const digest = jest.spyOn(crypto.subtle, "digest")
+    .mockResolvedValueOnce(new Uint8Array(32).fill(17).buffer)
+    .mockResolvedValue(new Uint8Array(32).fill(34).buffer);
+  serveLogSnapshot(() => [
+    { ...sampleLog, requestId: "hashed", conversationId: "11".repeat(16) },
+    { ...sampleLog, requestId: "other", conversationId: "22".repeat(16) },
+  ]);
+  let mounted: Awaited<ReturnType<typeof mountLogs>> | undefined;
+  try {
+    mounted = await mountLogs();
+    const { container } = mounted;
+    await flushMicrotasks();
+    await enterConversation(container, "raw-conversation");
+    expect(digest).toHaveBeenCalled();
+    expect(visibleRequestIds(container)).toEqual(["hashed"]);
+    await changeLogSelect(container, "Status", "success");
+    await changeLogSelect(container, "Time", "1h");
+    await act(async () => { container.querySelector<HTMLButtonElement>(".logs-filter-status button")!.click(); });
+    expect(visibleRequestIds(container)).toEqual(["other", "hashed"]);
+    expect(container.querySelector(".logs-filter-status")).toBeNull();
+    const detail = container.querySelector<HTMLButtonElement>('.log-detail-btn[aria-label="Details: other"]')!;
+    expect(detail).not.toBeNull();
+    await act(async () => { detail.click(); });
+    const apply = [...container.querySelectorAll<HTMLButtonElement>("dialog button")]
+      .find(button => button.textContent?.trim() === "Filter logs");
+    expect(apply).toBeDefined();
+    await act(async () => { apply!.click(); });
+    await flushMicrotasks();
+    expect(visibleRequestIds(container)).toEqual(["other"]);
+    expect(container.querySelector("dialog")).toBeNull();
+    expect(container.querySelector<HTMLInputElement>('.logs-filter-container input[type="search"]')!.value).toBe("22".repeat(16));
+  } finally {
+    try {
+      if (mounted) await act(async () => { mounted!.root.unmount(); });
+    } finally {
+      digest.mockRestore();
+    }
+  }
+});
+
+test("Logs: a hash completed after reset cannot match a newer conversation query", async () => {
+  let resolveOld!: (value: ArrayBuffer) => void;
+  let resolveNew!: (value: ArrayBuffer) => void;
+  const oldHash = new Promise<ArrayBuffer>(resolve => { resolveOld = resolve; });
+  const newHash = new Promise<ArrayBuffer>(resolve => { resolveNew = resolve; });
+  const digest = jest.spyOn(crypto.subtle, "digest").mockReturnValueOnce(oldHash).mockReturnValueOnce(newHash);
+  serveLogSnapshot(() => [
+    { ...sampleLog, requestId: "old", conversationId: "11".repeat(16) },
+    { ...sampleLog, requestId: "new", conversationId: "22".repeat(16) },
+  ]);
+  let mounted: Awaited<ReturnType<typeof mountLogs>> | undefined;
+  try {
+    mounted = await mountLogs();
+    const { container } = mounted;
+    await flushMicrotasks();
+    await enterConversation(container, "old-query");
+    expect(digest).toHaveBeenCalledTimes(1);
+    await act(async () => { container.querySelector<HTMLButtonElement>(".logs-filter-status button")!.click(); });
+    expect(visibleRequestIds(container)).toEqual(["new", "old"]);
+    expect(container.querySelector(".logs-filter-status")).toBeNull();
+    await enterConversation(container, "new-query");
+    expect(digest).toHaveBeenCalledTimes(2);
+    await act(async () => { resolveOld(new Uint8Array(32).fill(17).buffer); });
+    await flushMicrotasks();
+    expect(visibleRequestIds(container)).toEqual([]);
+    expect(container.textContent).toContain("No matching requests.");
+    await act(async () => { resolveNew(new Uint8Array(32).fill(34).buffer); });
+    await flushMicrotasks();
+    expect(visibleRequestIds(container)).toEqual(["new"]);
+  } finally {
+    try {
+      if (mounted) await act(async () => { mounted!.root.unmount(); });
+    } finally {
+      digest.mockRestore();
+    }
+  }
+});
+
+test("Logs: no matches differs from a truly empty ring and reset restores loaded rows", async () => {
+  let rows = [sampleLog];
+  serveLogSnapshot(() => rows);
+  const { root, container } = await mountLogs();
+  try {
+    await flushMicrotasks();
+    await changeLogSelect(container, "Status", "errors");
+    expect(container.textContent).toContain("No matching requests.");
+    expect(container.textContent).not.toContain("No requests yet.");
+    await act(async () => { container.querySelector<HTMLButtonElement>(".logs-filter-status button")!.click(); });
+    expect(visibleRequestIds(container)).toEqual(["req-1"]);
+    rows = [];
+    await advanceSilentRefresh();
+    expect(container.textContent).toContain("No requests yet.");
+    expect(container.textContent).not.toContain("No matching requests.");
+    await changeLogSelect(container, "Status", "errors");
+    expect(container.textContent).toContain("No requests yet.");
+    expect(container.textContent).not.toContain("No matching requests.");
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+});
+
+test("Logs: a cold empty snapshot shows no requests rather than no matches", async () => {
+  serveLogSnapshot(() => []);
+  const { root, container } = await mountLogs();
+  try {
+    await flushMicrotasks();
+    expect(container.textContent).toContain("No requests yet.");
+    expect(container.textContent).not.toContain("No matching requests.");
+    expect(container.textContent).not.toContain("Could not load request logs.");
+    expect(container.querySelector(".logs-filter-status")).toBeNull();
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+});

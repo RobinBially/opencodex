@@ -112,7 +112,7 @@ logs.noMatchingRequests
 
 The source range supplies the exact translated values for every key, including both `{count}` and `{total}` placeholders. Retain now-unused `logs.filter.model.placeholder` and conversation-clear keys; deleting them is unrelated churn.
 
-Before B starts, main exchanges the actual B3659 head and changed-key/selector inventory. No B3659 source ref was supplied to this delegate, so no fresh claim of hunk disjointness is made. Both lanes touch all nine catalog files and `styles.css`; merge by keys/selectors, never by choosing one whole file. B preserves `.logs-*`; D preserves `.models-*` and B's shared control fixes. Shared `.select-sm` or global token changes belong to main's integration review. Re-read the final union after either lower stack layer changes; CI must run against that union. Public dashboard docs can also overlap: D inserts the Logs subsection and preserves B's Models wording.
+Before B starts, main exchanges the actual B3659 head and changed-key/selector inventory. No B3659 source ref was supplied to this delegate, so no fresh claim of hunk disjointness is made. B confirmed on this run that source #3659 changes nine locale files but no stylesheet, and its implementation has not started. Preserve both lanes by keys; recheck any later B style additions rather than assuming a current stylesheet overlap. B preserves `.logs-*`; D preserves `.models-*` and B's shared control fixes. Shared `.select-sm` or global token changes belong to main's integration review. Re-read the final union after either lower stack layer changes; CI must run against that union. Public dashboard docs can also overlap: D inserts the Logs subsection and preserves B's Models wording.
 
 ## Behavioral regression amendments and acceptance
 

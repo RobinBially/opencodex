@@ -144,3 +144,38 @@ describe("rich Logs filtering", () => {
     expect(hasActiveLogFilters({ ...DEFAULT_LOG_FILTER_STATE, conversationId: "  conv  " })).toBe(true);
   });
 });
+
+test.each([
+  ["15m", 15 * 60_000], ["1h", 60 * 60_000], ["24h", 24 * 60 * 60_000],
+] as const)("relative window %s includes its lower boundary and expires it as time advances", (timeWindow, duration) => {
+  const rows = [
+    { id: "before", timestamp: NOW - duration - 1 },
+    { id: "boundary", timestamp: NOW - duration },
+    { id: "inside", timestamp: NOW - duration + 1 },
+    { id: "invalid", timestamp: Number.NaN },
+  ];
+  const filters = { ...DEFAULT_LOG_FILTER_STATE, timeWindow };
+  expect(filterLogs(rows, filters, NOW).map(row => row.id)).toEqual(["boundary", "inside"]);
+  expect(filterLogs(rows, filters, NOW + 1).map(row => row.id)).toEqual(["inside"]);
+});
+
+test("speed buckets separate values immediately below and at both boundaries", () => {
+  const rows = [14.99, 15, 49.99, 50].map(value => ({
+    id: String(value), displayMetrics: { tokPerSecond: { kind: "value" as const, value } },
+  }));
+  expect(filterLogs(rows, { ...DEFAULT_LOG_FILTER_STATE, maxTokPerSec: 15 }).map(row => row.id)).toEqual(["14.99"]);
+  expect(filterLogs(rows, { ...DEFAULT_LOG_FILTER_STATE, minTokPerSec: 15, maxTokPerSec: 50 }).map(row => row.id))
+    .toEqual(["15", "49.99"]);
+  expect(filterLogs(rows, { ...DEFAULT_LOG_FILTER_STATE, minTokPerSec: 50 }).map(row => row.id)).toEqual(["50"]);
+});
+
+test("exact model choices distinguish prefix siblings and compose with a provider on another attempt", () => {
+  const rows = [
+    { id: "exact", model: "model-a", provider: "openai" },
+    { id: "sibling", model: "model-a-plus", provider: "openai" },
+    { id: "resolved", model: "requested", resolvedModel: " MODEL-A ", provider: "openai" },
+    { id: "attempt", attempts: [{ model: "model-a", provider: "first" }, { model: "other", provider: "openai" }] },
+  ];
+  expect(filterLogs(rows, { ...DEFAULT_LOG_FILTER_STATE, model: "model-a", provider: "openai" }).map(row => row.id))
+    .toEqual(["exact", "resolved", "attempt"]);
+});
