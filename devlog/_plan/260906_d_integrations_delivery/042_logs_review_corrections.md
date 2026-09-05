@@ -27,3 +27,7 @@ Prior D accepted the Cursor guidance candidate92f848e8, with final c-4 shipping 
 ## Delegation and verification
 
 Main owns server route/test, docs, Git/CI/FSM and native browser QA. Inherited Huygens owns only the GUI page/filter bar/optional clock helper and the corresponding GUI tests. Nash audits before B; independent implementation review follows. All application test/typecheck/lint/build commands run remotely; no local suite. Remote GUI checks include all GUI tests, lint/i18n/build, plus root typecheck/full suite and docs build. Final receipts state any queued GitHub jobs explicitly rather than marking them passed.
+
+## Check-phase React Doctor correction
+
+A cold pinned0.9.11 scan with the actual6005 base available reported two concrete diagnostics: rollover selection was adjusted in a post-render effect, and the rendered filter-bar test assigned an external observer during render. Move reconciliation into acceptance of the latest valid log response, preserving permanent reset when an identity disappears and current spelling when it remains. Keep component rendering pure by observing test state from an effect/event. No rule suppression is planned. Re-run the cold changed-scope scan before the regression suites. The earlier same-head hosted success is retained as an observed run result; it is not evidence that these diagnostics were absent.

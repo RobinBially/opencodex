@@ -472,6 +472,22 @@ export default function Logs({ apiBase }: { apiBase: string }) {
       // The resource-store generation guard runs only after this loader returns.
       // Guard these local side effects here as fetch/body readers may ignore abort.
       if (!isCurrent()) throw signal.reason ?? new DOMException("Obsolete log request", "AbortError");
+      // Reconcile when the accepted snapshot changes, using the latest user state
+      // rather than filters captured when the request started. Persist disappearance
+      // as All so a later ring cannot resurrect a cleared selection.
+      const options = extractLogFilterOptions(next);
+      setFilters(previous => {
+        const model = previous.model.trim().toLowerCase();
+        const provider = previous.provider.trim().toLowerCase();
+        const nextModel = model
+          ? options.models.find(option => option.trim().toLowerCase() === model) ?? ""
+          : "";
+        const nextProvider = provider
+          ? options.providers.find(option => option.trim().toLowerCase() === provider) ?? ""
+          : "";
+        if (previous.model === nextModel && previous.provider === nextProvider) return previous;
+        return { ...previous, model: nextModel, provider: nextProvider };
+      });
       const sample = logsClockAnchor(Array.isArray(body) ? undefined : body.generatedAt, receivedAt);
       if (sample) clock.anchor = sample;
       setFilterClockNow(logsClockNow(clock.anchor, receivedAt, Date.now()));
@@ -554,23 +570,6 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   }, [conversationQuery]);
 
   const filterOptions = useMemo(() => extractLogFilterOptions(logs), [logs]);
-  // Native selects require the exact current option spelling even though filtering
-  // compares normalized identities. Reconcile casing changes on ring rollover, and
-  // clear only identities that disappeared; keep every other filter intact.
-  useEffect(() => {
-    setFilters(previous => {
-      const model = previous.model.trim().toLowerCase();
-      const provider = previous.provider.trim().toLowerCase();
-      const nextModel = model
-        ? filterOptions.models.find(option => option.trim().toLowerCase() === model) ?? ""
-        : "";
-      const nextProvider = provider
-        ? filterOptions.providers.find(option => option.trim().toLowerCase() === provider) ?? ""
-        : "";
-      if (previous.model === nextModel && previous.provider === nextProvider) return previous;
-      return { ...previous, model: nextModel, provider: nextProvider };
-    });
-  }, [filterOptions, filters.model, filters.provider]);
   const activeFilters = hasActiveLogFilters(filters);
   const filteredLogs = useMemo(() => filterLogs(logs, filters, filterClockNow), [logs, filters, filterClockNow]);
   const conversationTotals = conversationQuery ? summarizeFilteredLogs(filteredLogs) : null;

@@ -1,6 +1,6 @@
 import { expect, jest, test } from "bun:test";
 import { Window } from "happy-dom";
-import { act, createElement, useState } from "react";
+import { act, createElement, useEffect, useState } from "react";
 import type { Root } from "react-dom/client";
 import { LanguageProvider } from "../src/i18n/provider";
 import type { TFn } from "../src/i18n/shared";
@@ -57,7 +57,7 @@ async function withFilterBar(
     document.body.append(container);
     function Harness() {
       const [filters, setFilters] = useState(initial);
-      current = filters;
+      useEffect(() => { current = filters; }, [filters]);
       return createElement(LogsFilterBar, {
         filters, options: { models: ["model-a", "model-a-plus"], providers: ["openai", "xai"] },
         hasActiveFilters: hasActiveLogFilters(filters), filteredCount: 1, totalCount: 2,
