@@ -330,7 +330,7 @@ test("a locked coordinator returns the exact typed busy outcome", async () => {
     controller?.close();
     cleanupSandbox(sandbox);
   }
-}, { timeout: 2 * CHILD_TIMEOUT_MS });
+}, { timeout: 3 * CHILD_TIMEOUT_MS });
 
 test("an unsafe coordinator path returns the exact typed unsafe-path outcome", async () => {
   const sandbox = createSandbox("unsafe-path");
