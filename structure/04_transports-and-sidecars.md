@@ -1535,7 +1535,10 @@ schemas; `tool-definitions.ts` remains the public facade and protobuf encoder.
 Advertisement and normalization intentionally differ for shell bridges: Cursor may
 emit `cmd`, while the declared Responses contract decides whether it becomes
 `command`. Both paths preserve execution-control fields. Freeform tools use one
-required string `input`; bare shell bridge names are rejected on the freeform path.
+required string `input` in a closed object, retaining that tool's string-valued
+input description from the parser (including patch-envelope guidance). Other input
+constraints cannot widen the canonical shape. Bare shell bridge names are rejected
+on the freeform path.
 Namespaced tools do not acquire bare-shell behavior. Regression coverage lives in
 `tests/providers/cursor/cursor-tool-definitions.test.ts`.
 
