@@ -191,11 +191,18 @@ first and submit the returned digest. Prefer quarantine when recovery may be nee
 | `GET /api/models` | Return the dashboard/CLI model rows | `catalog_busy` when gathering is saturated |
 | `GET /api/client-config?client=...` | Build a read-only client config for any supported file integration | 400 unsupported client; 503 catalog unavailable |
 | `PUT /api/disabled-models` | Replace the shared disabled-model list | 400 invalid JSON |
-| `PUT /api/model-visibility` | Atomically change provider- or model-level visibility | 400 invalid provider, scope, target, or body |
+| `PUT /api/model-visibility` | Atomically change provider- or model-level visibility | 400 invalid provider, scope, target, or body; 409 `initial_model_selection_pending` (refresh the model list and retry) |
 | `GET, POST /api/custom-models` | List custom models or add one | 400 invalid fields; 404 provider missing; 409 duplicate model |
 | `PUT, DELETE /api/custom-models/{id}` | Edit or delete one custom model | 400 invalid id/fields; 404 not found; 409 duplicate model |
 | `GET, PUT /api/selected-models` | Read provider allowlists and availability, or replace one allowlist | 400 missing provider/body; 404 unknown provider; PUT 409 `initial_model_selection_pending` |
 | `GET, PUT /api/model-presets` | Read preset summaries or choose preset/all/custom mode | 400 invalid mode or unsupported preset; 404 unknown provider; PUT 409 `initial_model_selection_pending` |
+
+A manual model replaces the Models dashboard row with the same provider and model ID.
+For OpenAI, the manual row keeps `openai/<model>` and supports the same visibility controls
+as other routed models; removing it restores the bare native dashboard row. Explicit
+account-qualified native rows stay separate. This does not rename bare native routes or
+change account entitlements. Non-native OpenAI visibility targets must match a configured
+manual model.
 
 Valid PUT requests to `/api/selected-models` and `/api/model-presets` return HTTP 409 with code `initial_model_selection_pending` until a reliable initial model list is available. Refresh model discovery (for example, `GET /api/models`) and retry after it succeeds.
 
@@ -236,6 +243,18 @@ keys are not returned to dashboard clients.
 | `GET /api/quota-resets` | List recently detected quota-window resets and whether detection is enabled; `limit=<n>` caps the count | 400 invalid `limit` |
 | `GET, PUT /api/provider-context-caps` | Read or update global, all-provider, or one-provider context caps | 400 invalid request; 404 unknown provider |
 | `GET /api/provider-presets` | Return GUI provider presets derived from the runtime registry | — |
+
+The provider context-cap response includes `caps` (active limits) and `values` (last selected
+values, retained while disabled). Enabling a provider without `value` restores its selection,
+or uses the global `contextCapValue` on first enable. This also applies to OpenAI: the switch
+does not select a special 922k mode. An active cap bounds every native window; models with a
+supported long-context window may expand only up to their own supported ceiling.
+Updating the global value with `{ "value": 600000, "setAll": true }` changes only enabled
+provider caps; disabled providers keep their remembered selections when later enabled.
+In contrast, `{ "setAll": true }` without `value` enables every configured provider at the
+current global value, replacing their remembered selections. Turning a cap off does not
+activate its remembered value or erase the selection.
+
 
 `provider_has_dependent_combos` is a safety barrier: remove or edit the dependent combos before
 deleting their provider.

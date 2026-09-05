@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync} from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { nativeModelRows } from "../../src/codex/catalog";
 import { loadConfig, saveConfig } from "../../src/config";
@@ -7,6 +7,8 @@ import { handleManagementAPI } from "../../src/server/management-api";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "../helpers/isolated-codex-home";
 import { catalogConvergenceFactory } from "../helpers/catalog-convergence";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
+import { ManagementRequest as Request } from "../helpers/management-auth";
+import { listManagementModelRows } from "../../src/server/management/model-rows";
 
 const TEST_DIR = join(import.meta.dir, `.tmp-model-visibility-management-${process.pid}`);
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
@@ -365,4 +367,139 @@ describe("atomic model visibility management", () => {
     expect(loadConfig()).toEqual(before);
   });
 });
-import { ManagementRequest as Request } from "../helpers/management-auth";
+
+test("configured manual OpenAI rows can be toggled alongside native rows", async () => {
+  const config = loadConfig();
+  config.providers.openai = {adapter:"openai-responses",authMode:"forward",baseUrl:"https://chatgpt.com/backend-api/codex",liveModels:false};
+  config.customModels = [{id:"manual-gpt",provider:"openai",modelId:"gpt-5.5",contextWindow:128_000}];
+  config.disabledModels = ["openai/gpt-5.5", "gpt-5.4"];
+  expect((await putWithConfig({scope:"models",provider:"openai",targets:[{id:"gpt-5.5",native:false}],enabled:true},config)).status).toBe(200);
+  expect(config.disabledModels).toEqual(["gpt-5.4"]);
+  expect((await putWithConfig({scope:"models",provider:"openai",targets:[{id:"gpt-5.5",native:false},{id:"gpt-5.4",native:true}],enabled:false},config)).status).toBe(200);
+  expect(config.disabledModels).toContain("openai/gpt-5.5");
+  expect(config.disabledModels).toContain("gpt-5.4");
+  expect((await putWithConfig({scope:"models",provider:"openai",targets:[{id:"not-configured",native:false}],enabled:true},config)).status).toBe(400);
+});
+
+test("provider-group toggles persist mixed native and manual OpenAI targets together", async () => {
+  const config = loadConfig();
+  config.providers.openai = {
+    adapter: "openai-responses", authMode: "forward", liveModels: false,
+    baseUrl: "https://chatgpt.com/backend-api/codex", selectedModels: ["gpt-5.5"],
+  };
+  config.customModels = [{ id: "manual-gpt", provider: "openai", modelId: "gpt-5.5" }];
+  const unrelatedDisabled = [...config.disabledModels!];
+  const unrelatedProvider = structuredClone(config.providers["google-antigravity"]);
+  const targets = [{ id: "gpt-5.5", native: false }, { id: "gpt-5.4", native: true }];
+  saveConfig(config);
+
+  const disabled = await putWithConfig({ scope: "provider", provider: "openai", targets, enabled: false }, config);
+  expect(disabled.status).toBe(200);
+  expect(await disabled.json()).toMatchObject({ ok: true, scope: "provider", provider: "openai", enabled: false });
+  expect(config.disabledModels).toEqual([...unrelatedDisabled, "openai/gpt-5.5", "gpt-5.4"]);
+  expect(config.providers.openai.selectedModels).toEqual(["gpt-5.5"]);
+  expect(loadConfig().disabledModels).toEqual([...unrelatedDisabled, "openai/gpt-5.5", "gpt-5.4"]);
+  expect(loadConfig().providers.openai.selectedModels).toEqual(["gpt-5.5"]);
+  expect(loadConfig().providers["google-antigravity"]).toEqual(unrelatedProvider);
+  expect(refreshes).toBe(1);
+
+  const enabled = await putWithConfig({ scope: "provider", provider: "openai", targets, enabled: true }, config);
+  expect(enabled.status).toBe(200);
+  expect(await enabled.json()).toMatchObject({ ok: true, scope: "provider", provider: "openai", enabled: true });
+  expect(config.disabledModels).toEqual(unrelatedDisabled);
+  expect(config.providers.openai.selectedModels).toBeUndefined();
+  expect(loadConfig().disabledModels).toEqual(unrelatedDisabled);
+  expect(loadConfig().providers.openai.selectedModels).toBeUndefined();
+  expect(loadConfig().providers["google-antigravity"]).toEqual(unrelatedProvider);
+  expect(refreshes).toBe(2);
+});
+
+test("an invalid trailing target leaves a mixed OpenAI provider-group update atomic", async () => {
+  const config = loadConfig();
+  config.providers.openai = {
+    adapter: "openai-responses", authMode: "forward", liveModels: false,
+    baseUrl: "https://chatgpt.com/backend-api/codex", selectedModels: ["gpt-5.5"],
+  };
+  config.customModels = [{ id: "manual-gpt", provider: "openai", modelId: "gpt-5.5" }];
+  saveConfig(config);
+
+  for (const enabled of [false, true]) {
+    // Both valid targets would change state before the final invalid target is reached.
+    config.disabledModels = enabled ? ["other/keep", "openai/gpt-5.5", "gpt-5.4"] : ["other/keep"];
+    saveConfig(config);
+    const before = structuredClone(config);
+    const persistedBefore = loadConfig();
+    for (const invalid of [{ id: "not-configured", native: false }, { id: "gpt-9.9-imaginary", native: true }]) {
+      const response = await putWithConfig({
+        scope: "provider", provider: "openai", enabled,
+        targets: [{ id: "gpt-5.5", native: false }, { id: "gpt-5.4", native: true }, invalid],
+      }, config);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: "invalid model visibility target" });
+      expect(config).toEqual(before);
+      expect(loadConfig()).toEqual(persistedBefore);
+      expect(refreshes).toBe(0);
+    }
+  }
+});
+
+test("manual models replace management rows with the same provider/id and deletion restores natives", async () => {
+  const config = loadConfig();
+  config.providers.openai = {adapter:"openai-responses",authMode:"forward",baseUrl:"https://chatgpt.com/backend-api/codex",liveModels:false};
+  config.customModels = [
+    {id:"manual-gpt",provider:"openai",modelId:"gpt-5.5",contextWindow:128_000},
+    {id:"manual-google",provider:"google-antigravity",modelId:"gemini-3.1-pro",contextWindow:128_000},
+  ];
+  config.codexAccountNamespaces = { desktop: "@main" };
+  config.codexAccountPickerEnabled = true;
+  const accountModel = "gpt-5.5-account-fixture";
+  const qualifiedId = `desktop/${accountModel}`;
+  writeFileSync(join(isolatedCodexHome!.path, "models_cache.json"), JSON.stringify({
+    models: [{
+      slug: accountModel, supported_in_api: true, visibility: "list",
+      base_instructions: "You are Codex.", comp_hash: null, shell_type: "unified_exec",
+      supported_reasoning_levels: [{ effort: "medium" }], model_messages: {},
+    }],
+  }));
+  // Even an exact qualified-ID collision must preserve the account-bound native route.
+  config.customModels.push({ id: "manual-qualified", provider: "openai", modelId: qualifiedId });
+  const rows = await listManagementModelRows(config,{entitlementWaitMs:0});
+  expect(rows.filter(row=>row.provider==="openai" && row.id==="gpt-5.5")).toEqual([
+    expect.objectContaining({namespaced:"openai/gpt-5.5",custom:true,customId:"manual-gpt",contextWindow:128_000,fastRowAvailable:true}),
+  ]);
+  expect(rows.filter(row=>row.provider==="google-antigravity" && row.id==="gemini-3.1-pro")).toHaveLength(1);
+  expect(rows.filter(row => row.id === qualifiedId && row.native)).toEqual([
+    expect.objectContaining({ namespaced: qualifiedId, provider: "openai", native: true }),
+  ]);
+  config.disabledModels = ["openai/gpt-5.5"];
+  const disabledRows = await listManagementModelRows(config, { entitlementWaitMs: 0 });
+  expect(disabledRows.find(row => row.namespaced === "openai/gpt-5.5")).toMatchObject({
+    custom: true, disabled: true, fastRowAvailable: false,
+  });
+  config.disabledModels = [];
+  config.customModels = [];
+  const restored = await listManagementModelRows(config,{entitlementWaitMs:0});
+  expect(restored.some(row => row.id === qualifiedId && row.native)).toBe(true);
+  expect(restored.filter(row=>row.provider==="openai" && row.id==="gpt-5.5")).toEqual([
+    expect.objectContaining({namespaced:"gpt-5.5",native:true}),
+  ]);
+});
+
+test("manual OpenAI visibility preserves the pending-selection error contract", async () => {
+  const config = loadConfig();
+  config.providers.openai = {
+    adapter: "openai-responses", authMode: "forward", liveModels: false,
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    initialModelSelection: { version: 1, registrationId: "11111111-1111-4111-8111-111111111111", status: "pending" },
+  };
+  config.customModels = [{ id: "manual-gpt", provider: "openai", modelId: "gpt-5.5" }];
+  const before = structuredClone(config);
+  for (const target of [{ id: "gpt-5.5", native: false }, { id: "not-configured", native: false }]) {
+    const response = await putWithConfig({ scope: "models", provider: "openai", targets: [target], enabled: true }, config);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "initial_model_selection_pending" });
+    expect(config).toEqual(before);
+  }
+  expect((await putWithConfig({ scope: "invalid", provider: "openai", targets: [], enabled: true }, config)).status).toBe(400);
+  expect(config).toEqual(before);
+});
