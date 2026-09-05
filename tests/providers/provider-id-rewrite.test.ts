@@ -209,3 +209,10 @@ test("removal leaves the custom-model ownership marker untouched", () => {
     legacyOwnedSlugs: ["agnes-ai/agnes-2.5-flash", "huggingface/DeepSeek-V4-Flash-0731"],
   });
 });
+
+ test("moves remembered provider caps without activating them", () => {
+  const config = { providerContextCapValues: { [FROM]: 128_000 } } as unknown as OcxConfig;
+  expect(rewriteProviderReferences(config, FROM, TO)).toEqual({ changed: 1, collisions: [] });
+  expect(config.providerContextCapValues).toEqual({ [TO]: 128_000 });
+  expect(providerContextCap(config, TO)).toBeUndefined();
+});

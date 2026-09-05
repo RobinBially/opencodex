@@ -175,3 +175,40 @@ test("success toast expires after 6s and a repeated action re-arms it", async ()
   await fireTimers(6000);
   expect(container.querySelector(".action-toast")).toBeNull();
 });
+
+test("OpenAI context switch restores the selected cap instead of forcing 922k", async () => {
+  testWindow.sessionStorage.clear();
+  let caps: Record<string, number> = {openai:128_000};
+  const values = {openai:128_000};
+  const bodies: unknown[] = [];
+  const fallback = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/api/models")) return Response.json([
+      {provider:"openai",id:"gpt-5.5",namespaced:"gpt-5.5",native:true,disabled:false,contextWindow:caps.openai??272_000},
+    ]);
+    if (url.endsWith("/api/providers")) return Response.json([{name:"openai",authMode:"forward",liveModels:false}]);
+    if (url.endsWith("/api/provider-context-caps")) {
+      if (init?.method === "PUT") {
+        const body=JSON.parse(String(init.body)); bodies.push(body);
+        caps=body.enabled ? {openai:values.openai} : {};
+      }
+      return Response.json({caps,values,value:350_000});
+    }
+    return fallback(input,init);
+  }) as typeof fetch;
+  const { createRoot } = await import("react-dom/client");
+  await act(async () => { root=createRoot(container); root.render(<LanguageProvider><Models apiBase="http://localhost" /></LanguageProvider>); });
+  const settle=async()=>{await new Promise(resolve=>testWindow.setTimeout(resolve,0));};
+  await act(settle);
+  const cluster=()=>container.querySelector<HTMLElement>(".models-cap-cluster")!;
+  const toggle=()=>cluster().querySelector<HTMLButtonElement>("button.switch")!;
+  expect(cluster().textContent).toContain("128k");
+  await act(async()=>{toggle().click();await settle();});
+  expect(toggle().getAttribute("aria-pressed")).toBe("false");
+  expect(cluster().textContent).toContain("128k");
+  await act(async()=>{toggle().click();await settle();});
+  expect(toggle().getAttribute("aria-pressed")).toBe("true");
+  expect(cluster().textContent).toContain("128k");
+  expect(bodies).toEqual([{provider:"openai",enabled:false},{provider:"openai",enabled:true}]);
+});

@@ -296,7 +296,7 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     const over = nativeModelRows({ providerContextCaps: { openai: 2_000_000 } });
     expect(over.find(r => r.slug === "gpt-5.6-sol")?.contextWindow).toBe(922_000);
     expect(raised.find(r => r.slug === "gpt-5.5")?.contextWindow).toBe(272_000);
-    expect(raised.find(r => r.slug === "gpt-5.4")?.contextWindow).toBe(1_000_000);
+    expect(raised.find(r => r.slug === "gpt-5.4")?.contextWindow).toBe(922_000);
   });
 
   test("nativeModelRows applies providerContextCaps.openai as a ceiling (#1430)", () => {

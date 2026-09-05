@@ -51,8 +51,6 @@ import {
   fmtK,
   NATIVE_CAP_OPTIONS,
   NATIVE_CAP_OPTION_SET,
-  NATIVE_GPT56_DEFAULT_WINDOW,
-  NATIVE_GPT56_OPT_IN_WINDOW,
   PAGE,
   readCollapsedProviders,
   THREAD_OPTION_SET,
@@ -75,6 +73,7 @@ type CachedModelsPage = {
   selectedModels: ProviderModelMap;
   disabled: string[];
   contextCaps: Record<string, number>;
+  contextCapValues?: Record<string, number>;
   contextCapValue: number;
 };
 
@@ -213,6 +212,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
   const [search, setSearch] = useState<Record<string, string>>({});
   const [limit, setLimit] = useState<Record<string, number>>({});
   const [contextCaps, setContextCaps] = useState<Record<string, number>>(() => cached?.contextCaps ?? {});
+  const [contextCapValues, setContextCapValues] = useState<Record<string, number>>(() => cached?.contextCapValues ?? {});
   const [contextCapValue, setContextCapValue] = useState(() => cached?.contextCapValue ?? 350_000);
   const [customCap, setCustomCap] = useState("");
   const [showCustom, setShowCustom] = useState(false);
@@ -428,6 +428,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
       selectedModels: selectionData,
       disabled: [...nextDisabled],
       contextCaps: capsData.caps ?? {},
+      contextCapValues: capsData.values ?? capsData.caps ?? {},
       contextCapValue: nextCapValue,
     } satisfies CachedModelsPage;
     writeSessionListCache(cacheKey, next);
@@ -447,6 +448,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
     setSelectedModels(next.selectedModels);
     setContextCapValue(next.contextCapValue);
     setContextCaps(next.contextCaps);
+    setContextCapValues(next.contextCapValues ?? next.contextCaps);
   }, []);
 
   const catalogResource = useDataSurface<CachedModelsPage>(
@@ -722,7 +724,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
     }
   };
 
-  const toggleProviderCap = async (provider: string, nativeGroup = false) => {
+  const toggleProviderCap = async (provider: string) => {
     setBusy(true);
     busyRef.current = true;
     setStatus("");
@@ -733,13 +735,12 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
       const r = await fetch(`${apiBase}/api/provider-context-caps`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(enabled && nativeGroup
-          ? { provider, enabled, value: NATIVE_GPT56_OPT_IN_WINDOW }
-          : { provider, enabled }),
+        body: JSON.stringify({ provider, enabled }),
       });
       try {
         const data = await readJsonOrThrow<ProviderContextCapsResponse>(r, t("models.capSaveFailed"));
         setContextCaps(data?.caps ?? {});
+        setContextCapValues(data?.values ?? data?.caps ?? {});
         setOk(true);
         setStatus(t("models.capApplied"));
         await load(true);
@@ -784,6 +785,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
         const data = await readJsonOrThrow<ProviderContextCapsResponse>(r, t("models.capSaveFailed"));
         if (typeof data?.value === "number" && Number.isFinite(data.value) && data.value > 0) setContextCapValue(data.value);
         setContextCaps(data?.caps ?? {});
+        setContextCapValues(data?.values ?? data?.caps ?? {});
         setOk(true);
         setStatus(t("models.capApplied"));
         await load(true);
@@ -828,7 +830,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
   const onSelectProviderCap = (provider: string, raw: string) => {
     if (raw === CUSTOM_OPTION) {
       setProviderCapCustomOpen(prev => ({ ...prev, [provider]: true }));
-      setProviderCapCustomDraft(prev => ({ ...prev, [provider]: String(contextCaps[provider] ?? contextCapValue) }));
+      setProviderCapCustomDraft(prev => ({ ...prev, [provider]: String(contextCaps[provider] ?? contextCapValues[provider] ?? contextCapValue) }));
       return;
     }
     setProviderCapCustomOpen(prev => ({ ...prev, [provider]: false }));
@@ -1176,18 +1178,8 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
     const recentForProvider = modelDiscovery?.recentArrivals[provider] ?? [];
     const recentIds = new Set(recentForProvider.map(row => row.id));
     const capOn = contextCaps[provider] !== undefined;
-    const providerCap = contextCaps[provider] ?? contextCapValue;
-    // With the cap off, `providerCap` is only the value a future toggle would apply — for the
-    // native group that is the 350k default, which says nothing true about what Codex sees.
-    // The honest number there is the largest window the rows actually advertise.
-    const widestRowWindow = rows.reduce<number | undefined>((widest, row) => {
-      const window = typeof row.contextWindow === "number" && row.contextWindow > 0 ? row.contextWindow : undefined;
-      if (window === undefined) return widest;
-      return widest === undefined || window > widest ? window : widest;
-    }, undefined);
-    const capDisplayValue = capOn
-      ? providerCap
-      : (nativeProviderGroup ? NATIVE_GPT56_DEFAULT_WINDOW : (widestRowWindow ?? providerCap));
+    // Show the value the next enable will actually use, including a remembered selection.
+    const capDisplayValue = contextCaps[provider] ?? contextCapValues[provider] ?? contextCapValue;
     // The native group offers only the three windows GPT-5.6 actually has contracts for
     // (272k live, 372k legacy, 1.05M measured); routed providers keep the generic ladder.
     // The set has to follow the list, or a saved value outside it loses its option.
@@ -1348,7 +1340,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
                   screen-reader user was not told this governs the context window.
                   The number belongs to the adjacent Select, which is where a value
                   goes (020_control_affordances.md). */}
-              <Switch on={capOn} onClick={() => toggleProviderCap(provider, nativeProviderGroup)} disabled={busy} label={t("models.contextCapLabel")} showLabel />
+              <Switch on={capOn} onClick={() => toggleProviderCap(provider)} disabled={busy} label={t("models.contextCapLabel")} showLabel />
               {/* Always rendered, disabled when the cap is off. A cap-off provider used to
                   drop this control entirely, which is the defect the user reported: openai
                   showed 1.05M and anthropic showed nothing, so the two rows started at

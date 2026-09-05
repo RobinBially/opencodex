@@ -4664,3 +4664,31 @@ describe("provider transport option management contract (#1668, #2816)", () => {
     });
   });
 });
+
+test("OpenAI provider cap remembers an explicit window across off, reload, and on", async () => {
+  mkdirSync(TEST_DIR, { recursive: true });
+  process.env.OPENCODEX_HOME = TEST_DIR;
+  let live: OcxConfig = {
+    port: 0, defaultProvider: "openai", contextCapValue: 350_000,
+    providers: { openai: { adapter: "openai-responses", authMode: "forward", baseUrl: "https://chatgpt.com/backend-api/codex", liveModels: false } },
+  };
+  saveConfig(live);
+  const put = async (body: unknown) => {
+    const url = new URL("http://localhost/api/provider-context-caps");
+    const response = await handleManagementAPI(new Request(url, {method:"PUT", headers:{"content-type":"application/json"}, body:JSON.stringify(body)}), url, live, {createManagementConvergeCodex:catalogConvergenceFactory()});
+    expect(response?.status).toBe(200);
+    return response!.json();
+  };
+  expect(await put({provider:"openai",enabled:true})).toMatchObject({caps:{openai:350_000}});
+  await put({provider:"openai",enabled:true,value:128_000});
+  expect(await put({provider:"openai",enabled:false})).toMatchObject({caps:{},values:{openai:128_000}});
+  live = loadConfig();
+  expect(live.providerContextCaps).toBeUndefined();
+  expect(await put({provider:"openai",enabled:true})).toMatchObject({caps:{openai:128_000}});
+  const {nativeModelRows} = await import("../../src/codex/catalog");
+  expect(nativeModelRows(live).filter(row=>row.contextWindow !== undefined).every(row=>row.contextWindow! <= 128_000)).toBe(true);
+  await put({setAll:false});
+  expect(loadConfig().providerContextCapValues?.openai).toBe(128_000);
+  await put({setAll:true});
+  expect(loadConfig().providerContextCaps?.openai).toBe(350_000);
+});
