@@ -1131,12 +1131,16 @@ test("Logs: a late body from an aborted old apiBase cannot poison the new proxy 
     await renderLogsAt(root, "http://proxy-b");
     expect(oldSignal?.aborted).toBe(true);
     await changeLogSelect(container, "Time", "15m");
+    await changeLogSelect(container, "Model", "gpt-test");
+    await changeLogSelect(container, "Provider", "openai");
     await act(async () => { container.querySelector<HTMLInputElement>(".logs-auto-refresh input")!.click(); });
     await flushMicrotasks();
     expect(visibleRequestIds(container)).toEqual(["proxy-b"]);
     await act(async () => { late.resolve(proxyLogEnvelope(PROXY_NOW + 12 * 60 * 60_000, [])); });
     await flushMicrotasks();
     expect(visibleRequestIds(container)).toEqual(["proxy-b"]);
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Model"]')!.value).toBe("gpt-test");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Provider"]')!.value).toBe("openai");
     monotonic += 30_000;
     await act(async () => { jest.advanceTimersByTime(30_000); });
     await flushMicrotasks();
@@ -1199,5 +1203,72 @@ test("Logs: aborting an in-flight refresh before pausing cannot replace the acce
       wall.mockRestore();
       monotonicClock.mockRestore();
     }
+  }
+});
+
+test("Logs: reappearing options do not resurrect selections cleared by a successful rollover", async () => {
+  const original = { ...sampleLog, requestId: "original", model: "model-a", provider: "openai" };
+  const replacement = { ...sampleLog, requestId: "replacement", model: "model-b", provider: "xai" };
+  let rows = [original];
+  serveLogSnapshot(() => rows);
+  const { root, container } = await mountLogs();
+  try {
+    await flushMicrotasks();
+    await changeLogSelect(container, "Model", "model-a");
+    await changeLogSelect(container, "Provider", "openai");
+    await changeLogSelect(container, "Status", "success");
+    rows = [replacement];
+    await advanceSilentRefresh();
+    const select = (label: string) => container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!;
+    expect(select("Model").value).toBe("");
+    expect(select("Provider").value).toBe("");
+    expect(visibleRequestIds(container)).toEqual(["replacement"]);
+    rows = [original, replacement];
+    await advanceSilentRefresh();
+    expect(select("Model").value).toBe("");
+    expect(select("Provider").value).toBe("");
+    expect(select("Status").value).toBe("success");
+    expect(visibleRequestIds(container)).toEqual(["replacement", "original"]);
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+});
+
+test("Logs: a pending refresh reconciles the user's latest selection rather than its starting selection", async () => {
+  const late = delayedLogBody();
+  const original = [
+    { ...sampleLog, requestId: "a", model: "model-a", provider: "openai", status: 500 },
+    { ...sampleLog, requestId: "b", model: "model-b", provider: "xai", status: 500 },
+  ];
+  let requests = 0;
+  globalThis.fetch = (async input => {
+    if (!String(input).includes("/api/logs")) return jsonResponse({ timeZone: "UTC" });
+    requests++;
+    return requests === 1 ? jsonResponse(original) : late.response;
+  }) as typeof fetch;
+  const { root, container } = await mountLogs();
+  try {
+    await flushMicrotasks();
+    await changeLogSelect(container, "Model", "model-a");
+    await changeLogSelect(container, "Provider", "openai");
+    await advanceSilentRefresh();
+    expect(requests).toBe(2);
+    await changeLogSelect(container, "Model", "model-b");
+    await changeLogSelect(container, "Provider", "xai");
+    await changeLogSelect(container, "Status", "errors");
+    expect(visibleRequestIds(container)).toEqual(["b"]);
+    await act(async () => {
+      late.resolve([
+        { ...original[0]!, requestId: "other", model: "model-other" },
+        { ...original[1]!, requestId: "current", model: "MODEL-B", provider: "XAI" },
+      ]);
+    });
+    await flushMicrotasks();
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Model"]')!.value).toBe("MODEL-B");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Provider"]')!.value).toBe("XAI");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Status"]')!.value).toBe("errors");
+    expect(visibleRequestIds(container)).toEqual(["current"]);
+  } finally {
+    await act(async () => { root.unmount(); });
   }
 });
