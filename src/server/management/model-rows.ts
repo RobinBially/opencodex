@@ -166,7 +166,11 @@ export async function listManagementModelRows(
       ...(contextCap !== undefined ? { contextCap, contextCapped: m.contextCapped === true } : {}),
     };
   }).filter((row): row is ManagementModelRow => row !== null);
-  return [...native, ...dedupedRouted, ...visibleCustomModels].map(row =>
+  // Manual OpenAI rows retain their routed selector but replace the bare dashboard row.
+  // Account-qualified rows remain distinct, explicitly selected routes.
+  const visibleNative = native.filter(model => model.id.includes("/")
+    || !customNamespaced.has(routedSlug(model.provider, model.id)));
+  return [...visibleNative, ...dedupedRouted, ...visibleCustomModels].map(row =>
     initialModelSelectionPending(config.providers[row.provider])
       ? { ...row, disabled: true, initialSelectionPending: true }
       : row);

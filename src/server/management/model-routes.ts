@@ -566,7 +566,10 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
       }
       const id = value.id.trim();
       const native = value.native === true;
-      if (!id || (provider === "openai") !== native || (native && !supportedNative.has(id))) {
+      const configuredOpenAiCustom = provider === "openai" && !native && providerConfig
+        && (config.customModels ?? []).some(model => model.provider === provider && model.modelId === id);
+      if (!id || (native && (provider !== "openai" || !supportedNative.has(id)))
+        || (provider === "openai" && !native && !configuredOpenAiCustom)) {
         return jsonResponse({ error: "invalid model visibility target" }, 400);
       }
       const key = `${native ? "native" : "routed"}:${id}`;

@@ -366,3 +366,36 @@ describe("atomic model visibility management", () => {
   });
 });
 import { ManagementRequest as Request } from "../helpers/management-auth";
+
+test("configured manual OpenAI rows can be toggled alongside native rows", async () => {
+  const config = loadConfig();
+  config.providers.openai = {adapter:"openai-responses",authMode:"forward",baseUrl:"https://chatgpt.com/backend-api/codex",liveModels:false};
+  config.customModels = [{id:"manual-gpt",provider:"openai",modelId:"gpt-5.5",contextWindow:128_000}];
+  config.disabledModels = ["openai/gpt-5.5", "gpt-5.4"];
+  expect((await putWithConfig({scope:"models",provider:"openai",targets:[{id:"gpt-5.5",native:false}],enabled:true},config)).status).toBe(200);
+  expect(config.disabledModels).toEqual(["gpt-5.4"]);
+  expect((await putWithConfig({scope:"models",provider:"openai",targets:[{id:"gpt-5.5",native:false},{id:"gpt-5.4",native:true}],enabled:false},config)).status).toBe(200);
+  expect(config.disabledModels).toContain("openai/gpt-5.5");
+  expect(config.disabledModels).toContain("gpt-5.4");
+  expect((await putWithConfig({scope:"models",provider:"openai",targets:[{id:"not-configured",native:false}],enabled:true},config)).status).toBe(400);
+});
+
+test("manual models replace management rows with the same provider/id and deletion restores natives", async () => {
+  const {listManagementModelRows} = await import("../../src/server/management/model-rows");
+  const config = loadConfig();
+  config.providers.openai = {adapter:"openai-responses",authMode:"forward",baseUrl:"https://chatgpt.com/backend-api/codex",liveModels:false};
+  config.customModels = [
+    {id:"manual-gpt",provider:"openai",modelId:"gpt-5.5",contextWindow:128_000},
+    {id:"manual-google",provider:"google-antigravity",modelId:"gemini-3.1-pro",contextWindow:128_000},
+  ];
+  const rows = await listManagementModelRows(config,{entitlementWaitMs:0});
+  expect(rows.filter(row=>row.provider==="openai" && row.id==="gpt-5.5")).toEqual([
+    expect.objectContaining({namespaced:"openai/gpt-5.5",custom:true,customId:"manual-gpt",contextWindow:128_000}),
+  ]);
+  expect(rows.filter(row=>row.provider==="google-antigravity" && row.id==="gemini-3.1-pro")).toHaveLength(1);
+  config.customModels = [];
+  const restored = await listManagementModelRows(config,{entitlementWaitMs:0});
+  expect(restored.filter(row=>row.provider==="openai" && row.id==="gpt-5.5")).toEqual([
+    expect.objectContaining({namespaced:"gpt-5.5",native:true}),
+  ]);
+});

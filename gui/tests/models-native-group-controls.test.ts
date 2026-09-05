@@ -98,3 +98,9 @@ test("the native group exposes the context modal alongside the custom-model and 
   // The custom-add and cap controls no longer sit behind an isNative guard.
   expect(src).not.toMatch(/\{!isNative && </);
 });
+
+test("the canonical OpenAI card keeps its identity when every visible row is custom", () => {
+  const groups = buildProviderModelGroups([customRow("gpt-5.5")], [{name:"openai",authMode:"forward"}]);
+  expect(groups[0]!.nativeProviderGroup).toBe(true);
+  expect(groups[0]!.native).toBe(false);
+});
