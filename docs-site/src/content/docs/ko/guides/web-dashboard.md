@@ -57,12 +57,15 @@ Logs에서는 클라이언트 종류, 가로챈 요청, 공급자, 정확한 모
 사라지면 해당 필터만 전체로 돌아갑니다.
 
 시간 범위는 최근 15분·1시간·1일입니다. Logs 탭에서는 자동 새로고침을 꺼도
-30초마다 시간 필터를 갱신합니다. 속도는 전체 요청 시간으로 계산한 초당 출력 토큰
+30초마다 시간 필터를 갱신합니다. 프록시가 응답에 담은 시각에 브라우저의 경과 시간을
+더해 계산하므로, 두 기기의 시계가 달라도 범위가 밀리지 않습니다. 시각을 보내지 않는
+이전 프록시에서는 유효한 응답을 받기 전까지 브라우저 시계를 사용합니다. 속도는 전체 요청 시간으로 계산한 초당 출력 토큰
 수이며, 15 미만·15 이상 50 미만·50 이상으로 나뉩니다. 속도 필터를 켜면 측정값이
 없는 요청은 제외됩니다. 성공은 2xx, 오류는 4xx·5xx입니다.
 
 필터를 적용하면 일치하는 건수와 불러온 전체 건수가 표시됩니다. 필터를 초기화하면
-불러온 모든 행이 다시 나타납니다. 조건에 맞는 요청이 없는 상태와 로그 자체가 빈
+불러온 모든 행이 다시 나타나고 키보드 포커스는 클라이언트 종류의 전체 선택으로 돌아갑니다.
+조건에 맞는 요청이 없는 상태와 로그 자체가 빈
 상태는 구분해서 표시합니다. 클라이언트 종류는 방향키와 Home/End로 선택할 수 있습니다.
 불러온 범위 밖의 과거 로그는 조회하지 않습니다.
 
@@ -193,7 +196,7 @@ GUI는 프록시의 JSON 관리 API를 사용하는 얇은 클라이언트입니
 | `PUT /api/codex-auth/active` · `PUT /api/codex-auth/auto-switch` · `PUT /api/codex-auth/failover` | 다음 요청에 사용할 계정과 풀 라우팅 정책을 설정합니다. |
 | `GET /api/codex-auth/active` · `PUT /api/codex-auth/accounts/priority` | 실효 계정(고정 여부를 나타내는 `pinned`와 고정된 계정을 알려주는 `pinnedAccountId` 포함)을 읽고 계정 하나의 선택 순서를 설정합니다. |
 | `POST /api/codex-auth/login` · `GET /api/codex-auth/login-status` | 브라우저 로그인으로 pool 계정을 추가합니다. |
-| `GET /api/logs?tail=50&limit=20&offset=0&provider=...&status=5xx` | tail, 프로바이더, 정확한 상태 코드 또는 상태 등급으로 최근 요청 메타데이터를 조회합니다. `limit`/`offset`은 최신 행에서 과거 방향으로 페이지네이션합니다(`offset=0`이 최신 페이지). 응답은 `{ timeZone, total, logs }`이며 `total`은 페이지네이션 전 필터 일치 건수입니다. |
+| `GET /api/logs?tail=50&limit=20&offset=0&provider=...&status=5xx` | tail, 프로바이더, 정확한 상태 코드 또는 상태 등급으로 최근 요청 메타데이터를 조회합니다. `limit`/`offset`은 최신 행에서 과거 방향으로 페이지네이션합니다(`offset=0`이 최신 페이지). 응답은 `{ timeZone, generatedAt, total, logs }`이며 `total`은 페이지네이션 전 필터 일치 건수입니다. |
 | `GET` / `PUT /api/subagent-models` | `spawn_agent`에 우선 노출할 모델 5개를 읽거나 설정합니다. |
 | `POST /api/stop` | 프록시/서비스를 멈추고 네이티브 Codex를 복원한 뒤 종료합니다. Windows 작업 스케줄러 백엔드에서는 `respawnable_service`로, 그 상태를 읽을 수 없으면 `service_state_unknown`으로 거절하며, 두 경우 모두 아무것도 바뀌지 않습니다. |
 

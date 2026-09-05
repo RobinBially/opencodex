@@ -108,7 +108,7 @@ afterEach(() => {
   }
 });
 
-async function mountLogs(): Promise<{ root: Root; container: HTMLElement }> {
+async function mountLogs(apiBase = "http://localhost"): Promise<{ root: Root; container: HTMLElement }> {
   const { createRoot } = await import("react-dom/client");
   const container = document.createElement("div");
   document.body.append(container);
@@ -117,7 +117,7 @@ async function mountLogs(): Promise<{ root: Root; container: HTMLElement }> {
     root = createRoot(container);
     root.render(
       <LanguageProvider>
-        <Logs apiBase="http://localhost" />
+        <Logs apiBase={apiBase} />
       </LanguageProvider>,
     );
   });
@@ -849,6 +849,8 @@ test("Logs: detail conversation action and reset use the same filter state", asy
     await act(async () => { container.querySelector<HTMLButtonElement>(".logs-filter-status button")!.click(); });
     expect(visibleRequestIds(container)).toEqual(["other", "hashed"]);
     expect(container.querySelector(".logs-filter-status")).toBeNull();
+    expect(document.activeElement).toBe(container.querySelector("#logs-surface-all"));
+    expect(container.querySelector("#logs-surface-all")?.getAttribute("aria-checked")).toBe("true");
     const detail = container.querySelector<HTMLButtonElement>('.log-detail-btn[aria-label="Details: other"]')!;
     expect(detail).not.toBeNull();
     await act(async () => { detail.click(); });
@@ -941,5 +943,261 @@ test("Logs: a cold empty snapshot shows no requests rather than no matches", asy
     expect(container.querySelector(".logs-filter-status")).toBeNull();
   } finally {
     await act(async () => { root.unmount(); });
+  }
+});
+
+const PROXY_NOW = 1_800_000_000_000;
+
+function proxyLogEnvelope(generatedAt: unknown, logs: unknown[]) {
+  return { generatedAt, timeZone: "UTC", total: logs.length, logs };
+}
+
+async function renderLogsAt(root: Root, apiBase: string): Promise<void> {
+  await act(async () => {
+    root.render(<LanguageProvider><Logs apiBase={apiBase} /></LanguageProvider>);
+  });
+  await flushMicrotasks();
+}
+
+test.each([-6, 6])("Logs: proxy clock handles browser skew of %sh, wall jumps and paused expiry", async hours => {
+  let wallNow = PROXY_NOW + hours * 60 * 60_000;
+  let monotonic = 1000;
+  const wall = jest.spyOn(Date, "now").mockImplementation(() => wallNow);
+  const monotonicClock = jest.spyOn(performance, "now").mockImplementation(() => monotonic);
+  const clock = trackFilterClock();
+  let requests = 0;
+  const rows = [
+    { ...sampleLog, requestId: "too-old", timestamp: PROXY_NOW - 15 * 60_000 - 1000 },
+    { ...sampleLog, requestId: "fresh", timestamp: PROXY_NOW - 15 * 60_000 + 1000 },
+  ];
+  globalThis.fetch = (async input => {
+    if (!String(input).includes("/api/logs")) return jsonResponse({ timeZone: "UTC" });
+    requests++;
+    return jsonResponse(proxyLogEnvelope(PROXY_NOW, rows));
+  }) as typeof fetch;
+  let mounted: Awaited<ReturnType<typeof mountLogs>> | undefined;
+  try {
+    mounted = await mountLogs();
+    const { container } = mounted;
+    await flushMicrotasks();
+    expect(visibleRequestIds(container)).toEqual(["fresh", "too-old"]);
+    await changeLogSelect(container, "Time", "15m");
+    expect(visibleRequestIds(container)).toEqual(["fresh"]);
+    await act(async () => { container.querySelector<HTMLInputElement>(".logs-auto-refresh input")!.click(); });
+    await flushMicrotasks();
+    const pausedRequests = requests;
+    wallNow += 12 * 60 * 60_000;
+    monotonic += 500;
+    await act(async () => { jest.advanceTimersByTime(30_000); });
+    await flushMicrotasks();
+    expect(visibleRequestIds(container)).toEqual(["fresh"]);
+    wallNow -= 24 * 60 * 60_000;
+    monotonic += 30_000;
+    await act(async () => { jest.advanceTimersByTime(30_000); });
+    await flushMicrotasks();
+    expect(visibleRequestIds(container)).toEqual([]);
+    expect(container.textContent).toContain("No matching requests.");
+    expect(requests).toBe(pausedRequests);
+    await changeLogSelect(container, "Time", "all");
+    expect(visibleRequestIds(container)).toEqual(["fresh", "too-old"]);
+  } finally {
+    try {
+      if (mounted) await act(async () => { mounted!.root.unmount(); });
+    } finally {
+      clock.restore();
+      wall.mockRestore();
+      monotonicClock.mockRestore();
+    }
+  }
+});
+
+test("Logs: successful proxy samples resync immediately; legacy, malformed and failed refreshes retain the anchor", async () => {
+  const wall = jest.spyOn(Date, "now").mockReturnValue(PROXY_NOW - 6 * 60 * 60_000);
+  let monotonic = 1000;
+  const monotonicClock = jest.spyOn(performance, "now").mockImplementation(() => monotonic);
+  const clock = trackFilterClock();
+  const rows = [{ ...sampleLog, requestId: "row", timestamp: PROXY_NOW - 5 * 60_000 }];
+  let mode: "initial" | "resync" | "legacy" | "malformed" | "failed" = "initial";
+  globalThis.fetch = (async input => {
+    if (!String(input).includes("/api/logs")) return jsonResponse({ timeZone: "UTC" });
+    if (mode === "failed") return jsonResponse({ error: "unavailable" }, 503);
+    if (mode === "legacy") return jsonResponse(rows);
+    if (mode === "malformed") return jsonResponse(proxyLogEnvelope(-1, rows));
+    return jsonResponse(proxyLogEnvelope(mode === "initial" ? PROXY_NOW : PROXY_NOW + 20 * 60_000, rows));
+  }) as typeof fetch;
+  let mounted: Awaited<ReturnType<typeof mountLogs>> | undefined;
+  try {
+    mounted = await mountLogs();
+    const { container } = mounted;
+    await flushMicrotasks();
+    await changeLogSelect(container, "Time", "15m");
+    expect(visibleRequestIds(container)).toEqual(["row"]);
+    mode = "resync";
+    await advanceSilentRefresh();
+    // No 30s interval tick yet: receipt of a new server sample updates the filter.
+    expect(visibleRequestIds(container)).toEqual([]);
+    for (const next of ["legacy", "malformed", "failed"] as const) {
+      mode = next;
+      await advanceSilentRefresh();
+      expect(visibleRequestIds(container)).toEqual([]);
+    }
+    monotonic += 30_000;
+    await act(async () => { jest.advanceTimersByTime(30_000); });
+    await flushMicrotasks();
+    expect(visibleRequestIds(container)).toEqual([]);
+    expect(container.textContent).toContain("No matching requests.");
+  } finally {
+    try {
+      if (mounted) await act(async () => { mounted!.root.unmount(); });
+    } finally {
+      clock.restore();
+      wall.mockRestore();
+      monotonicClock.mockRestore();
+    }
+  }
+});
+
+test("Logs: switching apiBase clears the old proxy anchor for a legacy envelope", async () => {
+  const browserNow = PROXY_NOW + 6 * 60 * 60_000;
+  const wall = jest.spyOn(Date, "now").mockReturnValue(browserNow);
+  const monotonicClock = jest.spyOn(performance, "now").mockReturnValue(1000);
+  globalThis.fetch = (async input => {
+    const url = String(input);
+    if (!url.includes("/api/logs")) return jsonResponse({ timeZone: "UTC" });
+    if (url.startsWith("http://proxy-a/")) return jsonResponse(proxyLogEnvelope(PROXY_NOW, [
+      { ...sampleLog, requestId: "proxy-a", timestamp: PROXY_NOW - 60_000 },
+    ]));
+    return jsonResponse({ logs: [
+      { ...sampleLog, requestId: "legacy-old", timestamp: browserNow - 20 * 60_000 },
+      { ...sampleLog, requestId: "legacy-fresh", timestamp: browserNow - 5 * 60_000 },
+    ] });
+  }) as typeof fetch;
+  let mounted: Awaited<ReturnType<typeof mountLogs>> | undefined;
+  try {
+    mounted = await mountLogs("http://proxy-a");
+    const { root, container } = mounted;
+    await flushMicrotasks();
+    await changeLogSelect(container, "Time", "15m");
+    expect(visibleRequestIds(container)).toEqual(["proxy-a"]);
+    await renderLogsAt(root, "http://proxy-b");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Time"]')!.value).toBe("15m");
+    expect(visibleRequestIds(container)).toEqual(["legacy-fresh"]);
+  } finally {
+    try {
+      if (mounted) await act(async () => { mounted!.root.unmount(); });
+    } finally {
+      wall.mockRestore();
+      monotonicClock.mockRestore();
+    }
+  }
+});
+
+// The response headers have arrived, but its body reader deliberately ignores abort.
+// This reaches the loader's side-effect boundary after the resource-store guard fired.
+function delayedLogBody() {
+  let resolve!: (body: unknown) => void;
+  const body = new Promise<unknown>(done => { resolve = done; });
+  const response = jsonResponse({});
+  response.json = () => body;
+  return { response, resolve };
+}
+
+test("Logs: a late body from an aborted old apiBase cannot poison the new proxy clock", async () => {
+  const late = delayedLogBody();
+  let oldSignal: AbortSignal | undefined;
+  let oldRequests = 0;
+  const wall = jest.spyOn(Date, "now").mockReturnValue(PROXY_NOW + 6 * 60 * 60_000);
+  let monotonic = 1000;
+  const monotonicClock = jest.spyOn(performance, "now").mockImplementation(() => monotonic);
+  const clock = trackFilterClock();
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    if (!url.includes("/api/logs")) return jsonResponse({ timeZone: "UTC" });
+    if (url.startsWith("http://proxy-a/")) {
+      oldRequests++;
+      oldSignal = init?.signal ?? undefined;
+      return late.response;
+    }
+    return jsonResponse(proxyLogEnvelope(PROXY_NOW, [
+      { ...sampleLog, requestId: "proxy-b", timestamp: PROXY_NOW - 60_000 },
+    ]));
+  }) as typeof fetch;
+  let mounted: Awaited<ReturnType<typeof mountLogs>> | undefined;
+  try {
+    mounted = await mountLogs("http://proxy-a");
+    const { root, container } = mounted;
+    await flushMicrotasks();
+    expect(oldRequests).toBe(1);
+    await renderLogsAt(root, "http://proxy-b");
+    expect(oldSignal?.aborted).toBe(true);
+    await changeLogSelect(container, "Time", "15m");
+    await act(async () => { container.querySelector<HTMLInputElement>(".logs-auto-refresh input")!.click(); });
+    await flushMicrotasks();
+    expect(visibleRequestIds(container)).toEqual(["proxy-b"]);
+    await act(async () => { late.resolve(proxyLogEnvelope(PROXY_NOW + 12 * 60 * 60_000, [])); });
+    await flushMicrotasks();
+    expect(visibleRequestIds(container)).toEqual(["proxy-b"]);
+    monotonic += 30_000;
+    await act(async () => { jest.advanceTimersByTime(30_000); });
+    await flushMicrotasks();
+    expect(visibleRequestIds(container)).toEqual(["proxy-b"]);
+  } finally {
+    try {
+      if (mounted) await act(async () => { mounted!.root.unmount(); });
+    } finally {
+      clock.restore();
+      wall.mockRestore();
+      monotonicClock.mockRestore();
+    }
+  }
+});
+
+test("Logs: aborting an in-flight refresh before pausing cannot replace the accepted clock", async () => {
+  const late = delayedLogBody();
+  let requests = 0;
+  let lateSignal: AbortSignal | undefined;
+  const wall = jest.spyOn(Date, "now").mockReturnValue(PROXY_NOW - 6 * 60 * 60_000);
+  let monotonic = 1000;
+  const monotonicClock = jest.spyOn(performance, "now").mockImplementation(() => monotonic);
+  const clock = trackFilterClock();
+  globalThis.fetch = (async (input, init) => {
+    if (!String(input).includes("/api/logs")) return jsonResponse({ timeZone: "UTC" });
+    requests++;
+    if (requests === 2) {
+      lateSignal = init?.signal ?? undefined;
+      return late.response;
+    }
+    return jsonResponse(proxyLogEnvelope(PROXY_NOW, [
+      { ...sampleLog, requestId: "current", timestamp: PROXY_NOW - 60_000 },
+    ]));
+  }) as typeof fetch;
+  let mounted: Awaited<ReturnType<typeof mountLogs>> | undefined;
+  try {
+    mounted = await mountLogs();
+    const { container } = mounted;
+    await flushMicrotasks();
+    await changeLogSelect(container, "Time", "15m");
+    await advanceSilentRefresh();
+    expect(requests).toBe(2);
+    await act(async () => { container.querySelector<HTMLInputElement>(".logs-auto-refresh input")!.click(); });
+    await flushMicrotasks();
+    expect(lateSignal?.aborted).toBe(true);
+    const pausedRequests = requests;
+    await act(async () => { late.resolve(proxyLogEnvelope(PROXY_NOW + 12 * 60 * 60_000, [])); });
+    await flushMicrotasks();
+    expect(visibleRequestIds(container)).toEqual(["current"]);
+    monotonic += 30_000;
+    await act(async () => { jest.advanceTimersByTime(30_000); });
+    await flushMicrotasks();
+    expect(visibleRequestIds(container)).toEqual(["current"]);
+    expect(requests).toBe(pausedRequests);
+  } finally {
+    try {
+      if (mounted) await act(async () => { mounted!.root.unmount(); });
+    } finally {
+      clock.restore();
+      wall.mockRestore();
+      monotonicClock.mockRestore();
+    }
   }
 });
