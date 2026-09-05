@@ -524,21 +524,22 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   }, [conversationQuery]);
 
   const filterOptions = useMemo(() => extractLogFilterOptions(logs), [logs]);
-  // A selected option can disappear when the bounded log snapshot rolls over. Native
-  // <select> controls render such a value as an unlabeled/blank selection while the
-  // filter still excludes every row. Clear only the vanished model/provider identity;
-  // all other filters remain intact and the control returns to its explicit "All" option.
+  // Native selects require the exact current option spelling even though filtering
+  // compares normalized identities. Reconcile casing changes on ring rollover, and
+  // clear only identities that disappeared; keep every other filter intact.
   useEffect(() => {
-    const model = filters.model.trim().toLowerCase();
-    const provider = filters.provider.trim().toLowerCase();
-    const modelStillPresent = !model || filterOptions.models.some(option => option.trim().toLowerCase() === model);
-    const providerStillPresent = !provider || filterOptions.providers.some(option => option.trim().toLowerCase() === provider);
-    if (modelStillPresent && providerStillPresent) return;
-    setFilters(previous => ({
-      ...previous,
-      ...(modelStillPresent ? {} : { model: "" }),
-      ...(providerStillPresent ? {} : { provider: "" }),
-    }));
+    setFilters(previous => {
+      const model = previous.model.trim().toLowerCase();
+      const provider = previous.provider.trim().toLowerCase();
+      const nextModel = model
+        ? filterOptions.models.find(option => option.trim().toLowerCase() === model) ?? ""
+        : "";
+      const nextProvider = provider
+        ? filterOptions.providers.find(option => option.trim().toLowerCase() === provider) ?? ""
+        : "";
+      if (previous.model === nextModel && previous.provider === nextProvider) return previous;
+      return { ...previous, model: nextModel, provider: nextProvider };
+    });
   }, [filterOptions, filters.model, filters.provider]);
   const activeFilters = hasActiveLogFilters(filters);
   const filteredLogs = useMemo(() => filterLogs(logs, filters, filterClockNow), [logs, filters, filterClockNow]);

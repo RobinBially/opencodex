@@ -790,6 +790,44 @@ test("Logs: ring rollover clears only vanished model and provider selections", a
   }
 });
 
+test("Logs: casing-only rollover retains model and provider selection with current option spellings", async () => {
+  let rows = [
+    { ...sampleLog, requestId: "selected", model: "GPT-5", provider: "OpenAI" },
+    { ...sampleLog, requestId: "other-model", model: "model-other", provider: "OpenAI" },
+    { ...sampleLog, requestId: "other-provider", model: "GPT-5", provider: "xai" },
+  ];
+  serveLogSnapshot(() => rows);
+  const { root, container } = await mountLogs();
+  try {
+    await flushMicrotasks();
+    await changeLogSelect(container, "Model", "GPT-5");
+    await changeLogSelect(container, "Provider", "OpenAI");
+    await changeLogSelect(container, "Status", "success");
+    const select = (label: string) => container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!;
+    expect(select("Model").value).toBe("GPT-5");
+    expect(select("Provider").value).toBe("OpenAI");
+    expect(visibleRequestIds(container)).toEqual(["selected"]);
+
+    rows = rows.map(row => ({ ...row, model: row.model === "GPT-5" ? "gpt-5" : row.model }));
+    await advanceSilentRefresh();
+    expect(select("Model").value).toBe("gpt-5");
+    expect(select("Model").selectedOptions[0]?.value).toBe("gpt-5");
+    expect(select("Provider").value).toBe("OpenAI");
+    expect(visibleRequestIds(container)).toEqual(["selected"]);
+
+    rows = rows.map(row => ({ ...row, provider: row.provider === "OpenAI" ? "openai" : row.provider }));
+    await advanceSilentRefresh();
+    expect(select("Provider").value).toBe("openai");
+    expect(select("Provider").selectedOptions[0]?.value).toBe("openai");
+    expect(select("Model").value).toBe("gpt-5");
+    expect(select("Status").value).toBe("success");
+    expect(visibleRequestIds(container)).toEqual(["selected"]);
+    expect(container.querySelector(".logs-filter-status")?.textContent).toContain("Showing 1 of 3");
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+});
+
 test("Logs: detail conversation action and reset use the same filter state", async () => {
   const digest = jest.spyOn(crypto.subtle, "digest")
     .mockResolvedValueOnce(new Uint8Array(32).fill(17).buffer)
