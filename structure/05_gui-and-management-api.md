@@ -341,6 +341,27 @@ keeps the saved state and renders fixed `ocx sync` guidance without server/accou
 
 ## Usage accounting
 
+Account quota discovery is capability-based. Cheap OAuth and provider-key lists include
+`quotaMode` (`probe`, `passive`, or `unsupported`) without contacting upstream quota APIs.
+`GET /api/oauth/accounts?provider=...&quota=1` and
+`GET /api/providers/keys?name=...&quota=1` enrich each supported credential separately;
+`refresh=1` bypasses settled quota cache while joining a current same-identity read.
+OAuth readers use the named stored account; key readers use isolated per-key configuration,
+never active-key mutation or the provider-wide cache. Response projection rechecks key identity
+and exposes only quota/availability fields, not its internal identity guard. Passive observations
+retain their original timestamp and never trigger inference or token renewal. Unsupported,
+unobserved, failed and measured-zero readings remain distinct; multiple keys are not summed
+because they may share one upstream balance.
+
+Provider details use one account-quota reading renderer for Overview, Usage and Accounts/API
+keys. Current-account usage sits below usage statistics; a known-mode active row is authoritative
+even when empty, so a newly selected passive account cannot inherit a previous account's cached
+report. Pool reports project only `aggregation.currentAccount.quota` with its own timestamp;
+missing or malformed aggregation stays unknown rather than using total capacity. Shared states
+include credits-only and measured-zero readings, unsupported, unobserved, explicit pending and
+unavailable-with-last-good. Forced account/key enrichment settles before its control reports a
+completed check, and provider-report waiters are bound to the exact refresh epoch.
+
 `src/usage/log.ts` writes append-only JSONL to `~/.opencodex/usage.jsonl` with file mode `0o600`.
 An opt-in shadow-call rewrite persists the bounded, redacted original helper model as
 `shadowCallRewrittenFrom`, so helper traffic remains identifiable after restart without storing
@@ -363,6 +384,15 @@ request as a measured zero — that is what the `measured / reported / unreporte
 estimated` split exists for, and why coverage is reported alongside totals. The dashboard Usage tab renders the same shape, and the
 main Dashboard surfaces a 30d token / coverage summary. The in-memory `requestLog` is capped at
 200 entries and is **not** the source of truth for aggregation — the JSONL on disk is.
+
+Usage aggregation does not infer confirmed model identity merely from a requested selector.
+Model rows with saved unchanged
+default-provider route evidence carry `hasUnresolvedRequestedModel`: their tokens stay under
+the recorded serving provider, with an unresolved-request annotation. For those slash-containing
+selectors, a vendor-only inferred price is unavailable; exact provider and user prices remain
+eligible. Missing trace evidence is not reconstructed from today's configuration. Provider-detail
+model shares use that provider's token total, not the global total. Unknown reserved `policy/`
+selectors are rejected before upstream dispatch; historical rows remain unchanged.
 
 The management API retains the compact accumulator plus bounded query summaries; it never retains
 normalized per-request rows after a response. File identity changes, shrinkage, same-size metadata

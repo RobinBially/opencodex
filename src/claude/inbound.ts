@@ -134,6 +134,11 @@ function systemToInstructions(system: unknown): string | undefined {
 function imageBlockToInputImage(block: Rec): Rec | null {
   const source = block.source;
   if (!isRec(source)) return null;
+  if (source.type === "file") {
+    throw new AnthropicRequestError(
+      "File-backed images require native Anthropic passthrough; use base64 or URL images on translated routes.",
+    );
+  }
   if (source.type === "base64" && typeof source.data === "string") {
     const media = typeof source.media_type === "string" ? source.media_type : "image/png";
     return { type: "input_image", image_url: `data:${media};base64,${source.data}` };

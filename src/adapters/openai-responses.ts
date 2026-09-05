@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { IncomingMeta, ProviderAdapter } from "./base";
 import { namespacedToolName, type AdapterEvent, type OcxParsedRequest, type OcxProviderConfig, type OcxUsage, type TierDecision } from "../types";
 import { catalogModelSupportsReasoningSummaries } from "../codex/catalog";
+import { applyCodexRoutingHint, CODEX_RESPONSES_LITE_HEADER, CODEX_ROUTING_HINT_HEADER } from "../codex/forward-transport-headers";
 import { COMPACT_PROMPT, compactionItemToText, decodeCompactionSummary, isCompactionItemType } from "../responses/compaction";
 import { collectResponsesToolGroups } from "../responses/tool-groups";
 import { isHostedToolUnsupportedForModel } from "../responses/hosted-tool-policy";
@@ -51,6 +52,7 @@ export const FORWARD_HEADERS = [
   "x-oai-attestation",
   "x-openai-subagent",
   "x-responsesapi-include-timing-metrics",
+  CODEX_RESPONSES_LITE_HEADER,
 ];
 
 /**
@@ -2316,7 +2318,14 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         if (mayForwardCallerCredentials) {
           for (const h of FORWARD_HEADERS) {
             const v = incoming?.headers.get(h);
-            if (v) headers[h] = v;                                      // …so forwarded auth always wins.
+            if (v) {
+              if (h === CODEX_RESPONSES_LITE_HEADER) {
+                for (const name of Object.keys(headers)) {
+                  if (name.toLowerCase() === h) delete headers[name];
+                }
+              }
+              headers[h] = v; // …so genuine forwarded fields win.
+            }
           }
         }
         const override = runtimeProvider._codexAccountOverride;
@@ -2480,6 +2489,17 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         provider,
         parsed.modelId,
       );
+      if (isCanonicalOpenAiForwardProvider(provider)) {
+        const routingHeaders = new Headers(headers);
+        applyCodexRoutingHint(routingHeaders, finalBody);
+        // Static headers may use mixed casing. Remove every stale spelling
+        // without normalizing unrelated headers returned by this adapter.
+        for (const name of Object.keys(headers)) {
+          if (name.toLowerCase() === CODEX_ROUTING_HINT_HEADER) delete headers[name];
+        }
+        const hint = routingHeaders.get(CODEX_ROUTING_HINT_HEADER);
+        if (hint !== null) headers[CODEX_ROUTING_HINT_HEADER] = hint;
+      }
       const actualServiceTier = isPlainObject(finalBody) && typeof finalBody.service_tier === "string"
         ? finalBody.service_tier
         : null;

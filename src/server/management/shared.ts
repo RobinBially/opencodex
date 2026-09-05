@@ -55,6 +55,7 @@ import { drainAndShutdown } from "../lifecycle";
 import { filterRequestLogs, getRequestLogEntries, type RequestLogEntry } from "../request-log";
 import { estimateComboCost, estimateRequestCost, serviceTierContext, normalizeCostTokens, tokensPerSecond } from "../../usage/cost";
 import type { PersistedUsageAttempt } from "../../usage/log";
+import { usageModelPriceOptions } from "../../usage/model-identity";
 import { isAllowedRequestOrigin, jsonResponse, providerManagementConfigError, publicProviderBaseUrl, safeConfigDTO } from "../auth-cors";
 import { applySystemEnvToggle } from "../system-env";
 
@@ -95,7 +96,7 @@ export type CostResult =
   | { kind: "value"; estimate: NonNullable<ReturnType<typeof estimateRequestCost>>; estimateReasons: CostEstimateReason[] }
   | { kind: "unavailable"; reason: MetricUnavailableReason };
 
-export type MetricSource = Pick<RequestLogEntry, "provider" | "model" | "durationMs" | "usageStatus" | "usage" | "requestedServiceTier" | "configuredServiceTier" | "responseServiceTier" | "tierOutcome"> & {
+export type MetricSource = Pick<RequestLogEntry, "provider" | "model" | "durationMs" | "usageStatus" | "usage" | "requestedServiceTier" | "configuredServiceTier" | "responseServiceTier" | "tierOutcome" | "routeDecision"> & {
   attempts?: readonly PersistedUsageAttempt[];
 };
 
@@ -134,8 +135,8 @@ export function unavailableCostReason(entry: MetricSource): MetricUnavailableRea
 export function costResult(entry: MetricSource): CostResult {
   const tier = serviceTierContext(entry);
   const estimate = entry.attempts?.length
-    ? estimateComboCost(entry.attempts, undefined, tier)
-    : estimateRequestCost({ provider: entry.provider, model: entry.model, usage: entry.usage, usageStatus: entry.usageStatus, serviceTier: tier });
+    ? estimateComboCost(entry.attempts.map(attempt => ({ ...attempt, ...usageModelPriceOptions(entry, attempt) })), undefined, tier)
+    : estimateRequestCost({ provider: entry.provider, model: entry.model, usage: entry.usage, usageStatus: entry.usageStatus, serviceTier: tier, ...usageModelPriceOptions(entry, entry) });
   if (!estimate) return { kind: "unavailable", reason: unavailableCostReason(entry) };
   const estimateReasons = [
     entry.usageStatus === "estimated" || entry.usage?.estimated ? "usage_estimated" as const : undefined,
@@ -164,7 +165,7 @@ export function requestLogDto(entry: RequestLogEntry): Record<string, unknown> {
           ...attempt,
           displayMetrics: {
             tokPerSecond: tokPerSecondResult(attempt),
-            cost: costResult({ ...attempt, attempts: undefined, requestedServiceTier: entry.requestedServiceTier, configuredServiceTier: entry.configuredServiceTier, responseServiceTier: entry.responseServiceTier }),
+            cost: costResult({ ...attempt, attempts: undefined, routeDecision: entry.routeDecision, requestedServiceTier: entry.requestedServiceTier, configuredServiceTier: entry.configuredServiceTier, responseServiceTier: entry.responseServiceTier }),
           },
         })),
       }

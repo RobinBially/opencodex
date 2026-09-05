@@ -301,9 +301,15 @@ function outputToToolResultContent(output: string | unknown[] | undefined): stri
       if (typeof raw.text === "string") parts.push({ type: "text", text: raw.text });
     } else if (raw.type === "refusal" && typeof raw.refusal === "string") {
       parts.push({ type: "text", text: `[refusal: ${raw.refusal}]` });
-    } else if (raw.type === "input_image" && typeof raw.image_url === "string") {
-      parts.push({ type: "image", imageUrl: raw.image_url, ...(typeof raw.detail === "string" ? { detail: normalizeImageDetail(raw.detail) } : {}) });
-      hasImage = true;
+    } else if (raw.type === "input_image") {
+      const imageUrl = nonEmptyString(raw.image_url);
+      const fileId = nonEmptyString(raw.file_id);
+      if (imageUrl) {
+        parts.push({ type: "image", imageUrl, ...(typeof raw.detail === "string" ? { detail: normalizeImageDetail(raw.detail) } : {}) });
+        hasImage = true;
+      } else if (fileId) {
+        parts.push({ type: "text", text: `[image: ${fileId}]` });
+      }
     } else if (raw.type === "encrypted_content") {
       // codex-rs FunctionCallOutputContentItem::EncryptedContent — opaque to routed models.
       parts.push({ type: "text", text: "[encrypted content omitted]" });

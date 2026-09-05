@@ -397,6 +397,23 @@ the downstream relay emits its terminal `response.failed` event plus `[DONE]`.
 Pre-open HTTP fallback remains unmarked and follows the ordinary configured
 stream path.
 
+At the canonical ChatGPT destination, HTTP Responses Lite intent is copied into
+the native per-frame WS metadata key, and the routing hint is derived from the
+final outgoing model/tier. No caller identity is synthesized. Noncanonical
+opt-in gateways keep their own metadata policy. Oversized/unsupported-runtime
+HTTP fallback preserves the original HTTP body and Lite header.
+
+Canonical WS quota and response metadata preceding the first Responses event
+are projected into bounded, allowlisted HTTP headers before the response is
+committed. Later quota observations update only the captured serving account;
+they cannot retroactively change HTTP headers already sent to the client.
+Control frames remain bounded, and provider credential/cookie headers are not
+forwarded. Once a WS create may have been sent, a missing prelude, overflow or
+disconnect settles as an errored SSE body rather than a retryable fetch failure,
+so HTTP fallback cannot duplicate that inference. A standalone no-response
+exchange has a 30-second prelude deadline in addition to the upgrade deadline.
+These are transport-fidelity guarantees, not a provider-billing guarantee.
+
 Translated response request-log tracking and the heartbeat relay also reuse
 `createSseInspector`. This keeps every client-facing SSE observation path on
 the same byte-bounded, discard-and-resynchronize frame policy and ensures the
@@ -1427,7 +1444,7 @@ surface is listed here so a maintainer can find the owner without grepping:
 | Adapter execution support | `src/adapters/run-turn-queue.ts`, `src/adapters/tool-catalog-nudge.ts`, `src/adapters/identity.ts`, `src/adapters/image.ts`, `src/adapters/upstream-http-error.ts` | Shared machinery: turn ordering, tool-catalog nudging, client fingerprinting, image conversion, upstream error normalization. |
 | Cursor (beyond the sections above) | `src/adapters/cursor/live-transport.ts`, `src/adapters/cursor/http1-bidi.ts`, `src/adapters/cursor/live-models.ts`, `src/adapters/cursor/transport-retry.ts`, `src/adapters/cursor/mcp-manager.ts`, `src/adapters/cursor/thread-continuity.ts`, `src/adapters/cursor/checkpoint-store.ts` | Thread continuity is the point: a retry must not start a new Cursor thread, and a validated checkpoint must not rebuild the full root history. HTTP/2 remains the default; an explicit `http1.1`/`h1` pin maps the bidi run onto Cursor's `RunSSE` receive stream plus sequenced `BidiAppend` sends, and applies to live discovery too. |
 | Claude Messages | `src/server/claude-messages.ts` | Routed translation, a native Anthropic passthrough branch, and `count_tokens`. |
-| Chat Completions inbound | `src/server/chat-completions.ts`, `src/chat/` | Inbound translation onto the same routing pipeline. |
+| Chat Completions inbound | `src/server/chat-completions.ts`, `src/chat/` | Inbound translation onto the same routing pipeline. The content mapper preserves image URLs and supported detail, including screenshot-bearing tool results; target adapters own image placement on their wire. Image-free tool results stay strings. |
 | Hosted search relay | `src/server/search.ts` | Direct relay; distinct from the web-search sidecar loop below. |
 | Image/video generation loop | `src/images/loop.ts`, `src/images/plan.ts`, `src/images/fulfill.ts`, `src/images/xai-client.ts`, `src/images/xai-video-client.ts`, `src/images/artifacts.ts` | A provider-returned image URL is downloaded into a local artifact once, then served locally; warnings stay URL-free because provider CDN URLs may embed credentials. |
 | GitHub Copilot | `src/providers/xai-transport.ts` (`resolveProviderTransport`), `src/providers/github-copilot-transport.ts` | `resolveProviderTransport` selects the Copilot transport when the routed provider name is `github-copilot`; the Copilot module then resolves its headers and base URL, and the registry seeds the provider row and model fallback. |
@@ -1443,6 +1460,12 @@ surface is listed here so a maintainer can find the owner without grepping:
 - 선택한 방식: Keep presence-driven reactive recovery, apply proactive precedence only before dispatch, and use quota ordering for disabled-pool Anthropic recovery.
 - 다른 대안 대신 이 방식을 선택한 이유: This preserves the merged product decision without letting disabled proactive settings influence a retry, and it restores the published narrow-over-broad precedence in both directions.
 - 장점, 단점 및 영향: 429 recovery stays automatic for operators with multiple eligible accounts; operators who require no automatic account switch must keep one eligible account, which the GUI and public docs state explicitly.
+
+Cursor external-model continuations attach data-URL screenshots from the contiguous active
+tool-result batch through the existing image preparation and selected-context owners. The batch
+shares the 12-image active cap. Bounded source labels are emitted in active user-action text so
+root pruning cannot erase attachment provenance; the same text participates in token estimation.
+Native Composer/MCP behavior and text-only historical replay remain unchanged.
 
 ## Sidecars
 

@@ -42,9 +42,16 @@ import {
   type RouteDecisionTraceV1,
   type TraceCandidateInput,
 } from "./routing/trace";
-import { getRoutingProfile, resolvePolicyProfileId } from "./routing/profile";
+import { getRoutingProfile, resolvePolicyProfileId, POLICY_NAMESPACE } from "./routing/profile";
 import { evaluatePolicyProfile, type PolicyRequestEvidence } from "./routing/evaluator";
 import { assemblePolicyCandidateEvidence } from "./routing/compatibility/assemble";
+
+export class UnknownRoutingPolicyError extends Error {
+  constructor(readonly profileId: string) {
+    super(`Unknown routing policy: ${profileId}`);
+    this.name = "UnknownRoutingPolicyError";
+  }
+}
 
 export class NoEligiblePolicyCandidateError extends Error {
   /** Evaluation trace (with per-candidate exclusions) when nothing qualified. */
@@ -601,11 +608,13 @@ function routeModelInternal(
   // configured profile alias executes the policy evaluator and routes the
   // selected candidate. Only explicit requests reach this branch; concrete
   // recursive targets skip policy resolution entirely (bypassCombos) so an
-  // alias matching a selected candidate can never recurse, and a
-  // `policy/<id>` without a configured profile falls through to normal
-  // provider/default resolution instead of failing.
+  // alias matching a selected candidate can never recurse. Missing reserved
+  // policy selectors fail before ordinary provider/default resolution.
   const policyId = !bypassCombos ? resolvePolicyProfileId(config, modelId) : null;
   const profile = policyId ? getRoutingProfile(config, policyId) : undefined;
+  if (!bypassCombos && !profile && (policyId !== null || modelId.startsWith(`${POLICY_NAMESPACE}/`))) {
+    throw new UnknownRoutingPolicyError(policyId ?? modelId.slice(POLICY_NAMESPACE.length + 1));
+  }
   if (profile && policyId) {
     // One clock read per decision keeps candidate evidence, exclusions, and
     // scores mutually consistent and reproducible.

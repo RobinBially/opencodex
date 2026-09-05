@@ -14,10 +14,8 @@
 
 import { MAX_CLIENT_SSE_FRAME_BYTES } from "../sse-frame-buffer";
 import { compareBunVersions } from "../../lib/bun-stream-caps";
-
-const CODEX_RESPONSES_HTTP_URL = "https://chatgpt.com/backend-api/codex/responses";
-const CODEX_RESPONSES_WS_URL = "wss://chatgpt.com/backend-api/codex/responses";
-const WS_BETA = "responses_websockets=2026-02-06";
+import { CodexWsMetadata, type CodexWsQuotaObserver } from "./codex-ws-metadata";
+import { CODEX_RESPONSES_HTTP_URL, CODEX_RESPONSES_WS_URL, prepareCodexHttpInit, prepareCodexWsRequest } from "./codex-ws-request";
 
 /**
  * Dial URL for a request URL. The canonical ChatGPT backend keeps its constant;
@@ -51,6 +49,7 @@ function isResponsesWebsocketEligibleUrl(url: string): boolean {
 // If the 101 never arrives (network black hole), give SSE a chance well before
 // the caller's connect timeout (default 200s) would fire.
 const UPGRADE_DEADLINE_MS = 10_000;
+export const CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS = 30_000;
 // Keep the push-based WS transport inside the same memory envelope as the
 // bounded SSE relays that consume this response. Unlike fetch response bodies,
 // a WebSocket cannot be paused when a ReadableStream applies backpressure, so
@@ -86,6 +85,12 @@ export type BunRuntimeIdentity = {
 export type BunRuntimeGateInput = string | BunRuntimeIdentity;
 
 const codexWsUpstreamResponses = new WeakSet<Response>();
+const quotaObservedResponses = new WeakSet<Response>();
+
+/** Quota arrived directly at its captured account; do not replay old HTTP prelude headers. */
+export function isCodexWsQuotaObservedResponse(response: Response): boolean {
+  return quotaObservedResponses.has(response);
+}
 
 /** True only for a successful Codex WebSocket upgrade, never an HTTP fallback. */
 export function isCodexWsUpstreamResponse(response: Response): boolean {
@@ -158,6 +163,7 @@ const CLOSED_BEFORE_TERMINAL = "codex websocket closed before a Responses termin
 type ResponsesWsRelayEvent = {
   type: string;
   text: string;
+  payload: Record<string, unknown>;
 };
 
 /**
@@ -177,7 +183,7 @@ function normalizeResponsesWsRelayEvent(text: string): ResponsesWsRelayEvent | n
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   const record = payload as Record<string, unknown>;
   if (typeof record.type !== "string") return null;
-  if (record.type !== "response.done") return { type: record.type, text };
+  if (record.type !== "response.done") return { type: record.type, text, payload: record };
 
   const response = record.response;
   const status = response && typeof response === "object" && !Array.isArray(response)
@@ -196,7 +202,7 @@ function normalizeResponsesWsRelayEvent(text: string): ResponsesWsRelayEvent | n
       ? { ...(response as Record<string, unknown>), status: "failed" }
       : { status: "failed" };
   }
-  return { type, text: JSON.stringify(normalizedRecord) };
+  return { type, text: JSON.stringify(normalizedRecord), payload: normalizedRecord };
 }
 
 /**
@@ -248,7 +254,11 @@ export function codexWsUpstreamFetch(
   init: RequestInit,
   sseFallback: typeof globalThis.fetch,
   runtime: BunRuntimeGateInput = currentBunRuntimeIdentity(),
+  onQuota?: CodexWsQuotaObserver,
 ): Promise<Response> {
+  const prepared = prepareCodexWsRequest(url, init);
+  if (!prepared) return sseFallback(url, prepareCodexHttpInit(url, init));
+  init = prepared.httpInit;
   if (!bunSupportsBoundedCodexWsRelay(runtime)) {
     return sseFallback(url, init);
   }
@@ -257,16 +267,7 @@ export function codexWsUpstreamFetch(
     return Promise.reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
   }
 
-  let frameText: string;
-  try {
-    const body = JSON.parse(init.body as string) as Record<string, unknown>;
-    // The WS create frame is implicitly streaming; the backend rejects the
-    // HTTP-only `stream` flag inside a frame.
-    delete body.stream;
-    frameText = JSON.stringify({ ...body, type: "response.create" });
-  } catch {
-    return sseFallback(url, init);
-  }
+  const { frameText, headers } = prepared;
 
   // Decide before dialing. Once the socket is open the caller already holds a
   // streaming Response, so the oversized close can only be surfaced as a stream
@@ -276,17 +277,6 @@ export function codexWsUpstreamFetch(
     return sseFallback(url, init);
   }
 
-  const headers: Record<string, string> = {};
-  new Headers(init.headers ?? {}).forEach((value, key) => {
-    // HTTP-body framing headers do not apply to a WS handshake.
-    if (key === "content-type" || key === "content-length" || key === "accept" || key === "accept-encoding") return;
-    headers[key] = value;
-  });
-  headers["openai-beta"] = headers["openai-beta"]
-    ? headers["openai-beta"].includes("responses_websockets")
-      ? headers["openai-beta"]
-      : `${headers["openai-beta"]}, ${WS_BETA}`
-    : WS_BETA;
   // A genuine caller `originator` is already in these headers via the forward
   // set. Never fabricate one here: pool/forward traffic must not impersonate
   // Codex CLI, per the metadata-integrity contract. (The backend's fast lane
@@ -305,79 +295,110 @@ export function codexWsUpstreamFetch(
 
     let opened = false;
     let settledPreOpen = false;
+    let sent = false;
+    let received = false;
+    let responseCommitted = false;
     let terminal = false;
     let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
     const encoder = new TextEncoder();
+    const metadata = url === CODEX_RESPONSES_HTTP_URL ? new CodexWsMetadata(onQuota) : null;
+    let preludeTimer: ReturnType<typeof setTimeout> | undefined;
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) { controller = c; },
+      cancel() {
+        terminal = true;
+        cleanup();
+        try { ws.close(); } catch { /* already closing */ }
+      },
+    }, new ByteLengthQueuingStrategy({ highWaterMark: MAX_CODEX_WS_QUEUE_BYTES }));
 
-    const failStream = (message: string) => {
+    const cleanup = () => {
+      clearTimeout(upgradeTimer);
+      clearTimeout(preludeTimer);
+      signal?.removeEventListener("abort", onAbort);
+      metadata?.finish();
+    };
+
+    const commitResponse = () => {
+      if (responseCommitted) return;
+      responseCommitted = true;
+      clearTimeout(preludeTimer);
+      const responseHeaders = metadata?.snapshot() ?? new Headers();
+      responseHeaders.set("content-type", "text/event-stream; charset=utf-8");
+      const response = new Response(stream, { status: 200, headers: responseHeaders });
+      metadata?.commit();
+      codexWsUpstreamResponses.add(response);
+      if (metadata && onQuota) quotaObservedResponses.add(response);
+      resolve(response);
+    };
+
+    const failStream = (error: unknown) => {
       if (terminal) return;
       terminal = true;
-      try { controller?.error(new Error(message)); } catch { /* stream already done */ }
+      // A frame may already be executing upstream. Settle as a body failure,
+      // never a fetch rejection/5xx that the pre-stream wrapper could resend.
+      if (sent) commitResponse();
+      cleanup();
+      try { controller?.error(typeof error === "string" ? new Error(error) : error); } catch { /* stream already done */ }
       try { ws.close(); } catch { /* already closing */ }
     };
 
     const upgradeTimer = setTimeout(() => {
       if (opened || settledPreOpen) return;
       settledPreOpen = true;
+      cleanup();
       try { ws.close(); } catch { /* already closing */ }
       resolve(sseFallback(url, init));
     }, UPGRADE_DEADLINE_MS);
 
     const onAbort = () => {
-      if (!opened) {
+      if (!sent) {
         if (settledPreOpen) return;
         // Settle BEFORE close(): the close handler treats a pre-open close as
         // an upgrade rejection and would dial the SSE fallback for a request
         // the caller just cancelled.
         settledPreOpen = true;
-        clearTimeout(upgradeTimer);
+        cleanup();
         try { ws.close(); } catch { /* already closing */ }
         reject(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"));
         return;
       }
-      if (controller && !terminal) {
-        terminal = true;
-        // Mirror an aborted fetch: the body read rejects with the abort reason.
-        try { controller.error(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError")); } catch { /* stream already done */ }
-      }
-      // Error the body before close(): test doubles and some runtimes dispatch
-      // close synchronously, and the caller's abort reason must stay authoritative.
-      try { ws.close(); } catch { /* already closing */ }
+      failStream(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"));
     };
     signal?.addEventListener("abort", onAbort, { once: true });
 
     ws.addEventListener("open", () => {
       if (settledPreOpen) return;
       clearTimeout(upgradeTimer);
+      opened = true;
+      sent = true;
       try {
         ws.send(frameText);
       } catch {
+        if (received || responseCommitted) {
+          failStream("codex websocket send failed after response activity");
+          return;
+        }
         // send() throwing means the frame never left, so no upstream turn
         // started and the SSE resend cannot double-generate. Falling back
         // (instead of erroring a synthetic 200 body) keeps the pre-stream
         // HTTP error/refresh/failover machinery in charge.
         settledPreOpen = true;
+        sent = false;
+        cleanup();
         try { ws.close(); } catch { /* already closing */ }
         resolve(sseFallback(url, init));
         return;
       }
-      opened = true;
-      const stream = new ReadableStream<Uint8Array>({
-        start(c) { controller = c; },
-        cancel() { try { ws.close(); } catch { /* already closing */ } },
-      }, new ByteLengthQueuingStrategy({ highWaterMark: MAX_CODEX_WS_QUEUE_BYTES }));
-      const response = new Response(stream, {
-        status: 200,
-        // The 101 response headers (x-codex-*-reset-at quota hints) are not
-        // exposed by Bun's WebSocket; the periodic quota poller covers those.
-        headers: { "content-type": "text/event-stream; charset=utf-8" },
-      });
-      codexWsUpstreamResponses.add(response);
-      resolve(response);
+      if (!metadata) commitResponse();
+      else if (!responseCommitted && !terminal) {
+        preludeTimer = setTimeout(() => failStream("codex websocket response prelude timed out"), CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS);
+      }
     });
 
     ws.addEventListener("message", (event) => {
       if (!controller || terminal) return;
+      received = true;
       const text = typeof event.data === "string" ? event.data : "";
       if (!text) return;
       // UTF-8 byte length is always at least the JS string length. Reject this
@@ -395,15 +416,27 @@ export function codexWsUpstreamFetch(
       const normalized = normalizeResponsesWsRelayEvent(text);
       if (!normalized) return;
       const { type } = normalized;
-      const encodedText = normalized.text === text ? rawEncodedText : encoder.encode(normalized.text);
+      let relayText = normalized.text;
+      let controlFrame = false;
+      if (metadata) {
+        try {
+          const sanitized = metadata.consume(normalized.payload, rawEncodedText.byteLength);
+          if (sanitized !== null) {
+            relayText = sanitized;
+            controlFrame = true;
+          }
+        } catch (error) {
+          failStream(error);
+          return;
+        }
+      }
+      const encodedText = relayText === text ? rawEncodedText : encoder.encode(relayText);
       if (encodedText.byteLength > MAX_CODEX_WS_FRAME_BYTES) {
         failStream("codex websocket frame exceeds the response size limit");
         return;
       }
-      // Relay only the event surface the SSE path produces today. WS-only
-      // frames (codex.rate_limits, responsesapi.websocket_timing) are dropped
-      // so downstream clients see exactly the stream shape they always got.
-      if (!type.startsWith("response.") && type !== "error") return;
+      if (!controlFrame && !type.startsWith("response.") && type !== "error") return;
+      if (!controlFrame) commitResponse();
       const prefix = encoder.encode(`event: ${type}\ndata: `);
       const suffix = encoder.encode("\n\n");
       const frameBytes = prefix.byteLength + encodedText.byteLength + suffix.byteLength;
@@ -428,31 +461,24 @@ export function codexWsUpstreamFetch(
       }
       if (type === "response.completed" || type === "response.failed" || type === "response.incomplete" || type === "error") {
         terminal = true;
+        cleanup();
         try { controller.close(); } catch { /* already closed */ }
         try { ws.close(); } catch { /* already closing */ }
       }
     });
 
     ws.addEventListener("close", (event: unknown) => {
-      signal?.removeEventListener("abort", onAbort);
+      cleanup();
       if (!opened) {
         if (settledPreOpen) return;
         settledPreOpen = true;
-        clearTimeout(upgradeTimer);
         // Upgrade rejected (401/403/429/5xx). Retry over plain SSE so the real
         // HTTP status reaches the existing refresh/rotation handlers. No turn
         // started upstream, so the resend cannot double-generate.
         resolve(sseFallback(url, init));
         return;
       }
-      if (controller && !terminal) {
-        terminal = true;
-        // Connection dropped before a Responses terminal event. A clean EOF
-        // here would reach clients with no response.completed/failed at all —
-        // relaySseWithFailedTail() only synthesizes a failed terminal when the
-        // body read THROWS. Error the stream like a reset TCP socket.
-        try { controller.error(new Error(closedBeforeTerminalMessage(event))); } catch { /* stream already done */ }
-      }
+      if (sent && !terminal) failStream(closedBeforeTerminalMessage(event));
     });
 
     ws.addEventListener("error", () => {
