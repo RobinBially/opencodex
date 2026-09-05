@@ -824,7 +824,9 @@ See the [OpenCode Go model list](https://opencode.ai/docs/go/#models) for the cu
 A configured subset can exclude the lower tiers. Other providers retain their existing behavior.
 
 For a native-first picker, include native ids in `modelPickerOrder` followed by the
-routed ids. This orders the complete picker while preserving the separate subagent
-candidate priorities. Routed-only orders keep their previous behavior. See the
+routed ids. This orders the complete picker while preserving OpenCodex's separate natural-priority
+guidance calculation. Native Codex's advertised five follow picker priority and may change;
+exact-name override eligibility is not limited to that advertisement. Routed-only orders keep
+their previous behavior. See the
 [ordering migration note](/guides/model-ordering/#migration-note-native-ids-in-existing-orders).
 `modelDisplayNames` on a provider controls readable labels without changing wire ids.

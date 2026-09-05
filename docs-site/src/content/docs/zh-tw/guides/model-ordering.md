@@ -121,7 +121,16 @@ subagentModels = [
 整個選擇器的排序，包括置頂列。要保留以前只調整路由列的行為，請移除裸 ID。
 未設定、空列表、只有空白項目的列表以及只有路由 ID 的列表都保留原有行為。
 
-`modelPickerOrder` 不會改變 `spawn_agent` 的五個候選項及其選擇優先級。它只改變 Codex 選擇器中
-用於顯示的 `priority`；opencodex 會保留每個移動列的原有優先級，供子代理選擇使用。
+`modelPickerOrder` 保留 OpenCodex 按原有優先級計算最多五個偏好候選項的規則，供子代理指引使用。
+每個移動列的原有優先級與原生 `priority` 分開儲存；僅改變選擇器順序不得改變這項計算結果。
+它也不會限制以精確模型名稱指定 override 的資格：公佈的列表不是允許清單，既有的驗證、模型、
+effort 與後端限制仍然適用。
+
+原生 Codex 按原生 `priority` 排序，從符合條件且在選擇器中可見的模型中取前五個，公佈在
+`spawn_agent` 中。這適用於 V1，以及開放模型 override 的 V2。因此，即使 OpenCodex 的偏好候選項
+不變，原生公佈的五個模型仍可能隨選擇器順序改變。V1 不接收 OpenCodex 注入的偏好模型列表。
+V2 在用戶端目錄狀態允許時，可以額外接收基於原有優先級的 OpenCodex 指引；這些指引不會重排
+原生工具公佈的列表。
+
 `disabledModels` 和各供應商的 `selectedModels` 仍是可見性欄位。沒有獨立的 `modelOrder`、
 `providerOrder` 或優先級對應表設定。

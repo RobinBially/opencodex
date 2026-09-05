@@ -139,7 +139,17 @@ account selector가 있으면 bare native 선택이 selector-qualified 그룹으
 featured 행을 포함한 선택기 전체 정렬이 활성화됩니다. 기존 라우팅 전용 동작을 유지하려면 bare ID를
 제거하세요. 미설정 목록, 빈 목록, 공백만 있는 목록, 라우팅 ID만 있는 목록은 기존 동작을 유지합니다.
 
-`modelPickerOrder`는 `spawn_agent` 후보 5개와 후보 선택용 우선순위를 바꾸지 않습니다.
-Codex 선택기의 표시용 `priority`만 바꾸며, opencodex는 이동한 각 행의 원래 우선순위를 서브에이전트
-선택용으로 보존합니다. `disabledModels`와 각 공급자의 `selectedModels`는 노출 여부를 정하는 필드입니다.
+`modelPickerOrder`는 자연 우선순위로 최대 5개의 선호 후보를 고르는 OpenCodex의
+서브에이전트 안내용 계산을 보존합니다. 이동한 각 행의 자연 우선순위는 네이티브 `priority`와 별도로
+남으며, 선택기 순서만 바꿔서는 이 계산 결과가 달라지지 않습니다. 정확한 모델 이름으로 override를
+지정할 자격도 제한하지 않습니다. 광고 목록은 허용 목록이 아니며, 기존 인증·모델·effort·백엔드 제약은
+그대로 적용됩니다.
+
+네이티브 Codex는 네이티브 `priority` 순서에서 사용 가능하고 선택기에 표시되는 모델 중 앞의 5개를
+`spawn_agent`에 광고합니다. V1과 모델 override를 공개하는 V2가 여기에 해당합니다.
+따라서 OpenCodex의 선호 후보가 그대로여도 선택기 순서에 따라 광고되는 5개는 달라질 수 있습니다.
+V1에는 OpenCodex의 선호 후보 목록을 주입하지 않습니다. V2는 클라이언트 카탈로그 상태가 허용할 때
+자연 우선순위 기반 안내를 추가로 받을 수 있지만, 이 안내가 네이티브 도구의 광고 목록을 재정렬하지는 않습니다.
+
+`disabledModels`와 각 공급자의 `selectedModels`는 노출 여부를 정하는 필드입니다.
 별도의 `modelOrder`, `providerOrder`, priority map 설정은 없습니다.

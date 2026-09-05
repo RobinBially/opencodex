@@ -132,7 +132,16 @@ id 请勿超过五个。存在账户 selector 时，一个裸原生选项可能�
 整个选择器的排序，包括置顶行。要保持以前只调整路由行的行为，请移除裸 ID。
 未设置、空列表、只有空白条目的列表以及只有路由 ID 的列表都保留原有行为。
 
-`modelPickerOrder` 不会改变 `spawn_agent` 的五个候选项及其选择优先级。它只改变 Codex 选择器中
-用于显示的 `priority`；opencodex 会保留每个移动行的原有优先级，供子代理选择使用。
+`modelPickerOrder` 保留 OpenCodex 按原有优先级计算最多五个首选候选项的规则，供子代理指导使用。
+每个移动行的原有优先级与原生 `priority` 分开保存；仅改变选择器顺序不得改变这一计算结果。
+它也不会限制通过精确模型名称指定 override 的资格：公布的列表不是允许列表，现有的认证、模型、
+effort 和后端限制仍然适用。
+
+原生 Codex 按原生 `priority` 排序，从符合条件且在选择器中可见的模型中取前五个，公布在
+`spawn_agent` 中。这适用于 V1，以及公开模型 override 的 V2。因此，即使 OpenCodex 的首选候选项
+不变，原生公布的五个模型仍可能随选择器顺序改变。V1 不接收 OpenCodex 注入的首选模型列表。
+V2 在客户端目录状态允许时，可以额外接收基于原有优先级的 OpenCodex 指导；这些指导不会重排
+原生工具公布的列表。
+
 `disabledModels` 和各提供商的 `selectedModels` 仍是可见性字段。没有独立的 `modelOrder`、
 `providerOrder` 或优先级映射设置。

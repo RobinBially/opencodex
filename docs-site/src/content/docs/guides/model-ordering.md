@@ -154,9 +154,20 @@ their selector-qualified id in the list.
 Previously, native ids in `modelPickerOrder` were ignored. An existing list containing
 a bare native id now activates complete-picker ordering, including featured rows.
 Remove bare native ids to keep the previous routed-only behavior. Unset, empty and
-routed-only lists retain their behavior; subagent candidate priorities are unchanged.
+routed-only lists retain their behavior; OpenCodex's natural-priority guidance candidate calculation is unchanged.
 
-`modelPickerOrder` never changes the `spawn_agent` candidate set. It changes only the
-Codex-visible picker priority while opencodex retains each moved row's natural priority for
-sub-agent selection. `disabledModels` and each provider's `selectedModels` remain visibility fields,
+`modelPickerOrder` preserves OpenCodex's natural-priority calculation of up to five preferred
+candidates for subagent guidance. Each moved row retains its natural priority separately from
+its native `priority`; changing picker order alone must not change that OpenCodex calculation.
+It does not restrict eligibility for an exact-name model override: the native advertised list
+is not an allowlist, and existing authentication, model/effort and backend constraints still apply.
+
+Native Codex uses native `priority` to select the first five eligible picker-visible models
+advertised by `spawn_agent` on V1 and on V2 when model overrides are exposed. Those advertised
+five may therefore change with picker order, even when OpenCodex's preferred candidates remain
+unchanged. V1 receives no OpenCodex preferred-roster injection. V2 may additionally receive
+OpenCodex's natural-priority guidance when the client catalog state permits; that guidance does
+not reorder the native tool's advertised list.
+
+`disabledModels` and each provider's `selectedModels` remain visibility fields,
 not ordering controls. There is no separate `modelOrder`, `providerOrder`, or priority-map setting.

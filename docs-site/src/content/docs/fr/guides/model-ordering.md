@@ -158,10 +158,23 @@ Auparavant, les identifiants natifs dans `modelPickerOrder` étaient ignorés. U
 existante contenant un identifiant natif non qualifié ordonne désormais tout le sélecteur,
 y compris les lignes mises en avant. Supprimez ces identifiants pour conserver l’ancien
 comportement limité aux lignes routées. Les listes absentes, vides ou uniquement routées
-conservent leur comportement ; les priorités des candidats sous-agents ne changent pas.
+conservent leur comportement ; le calcul des candidats pour les consignes d’OpenCodex selon les priorités naturelles reste inchangé.
 
-`modelPickerOrder` ne modifie jamais l’ensemble des candidats de `spawn_agent`. Il change uniquement la
-priorité visible par Codex dans le sélecteur, tandis qu’OpenCodex conserve la priorité naturelle de chaque
-ligne déplacée pour la sélection des sous-agents. `disabledModels` et `selectedModels` de chaque fournisseur
+`modelPickerOrder` préserve le calcul d’OpenCodex qui retient jusqu’à cinq candidats préférés
+pour les consignes aux sous-agents, selon leur priorité naturelle. Chaque ligne déplacée conserve
+cette priorité séparément de son `priority` natif ; changer uniquement l’ordre du sélecteur ne doit
+pas modifier ce calcul. Cela ne restreint pas l’admissibilité d’un modèle désigné par son nom exact :
+la liste annoncée n’est pas une liste d’autorisation. Les contraintes d’authentification, de modèle,
+d’effort et de backend restent applicables.
+
+Codex natif utilise le `priority` natif pour annoncer les cinq premiers modèles admissibles et
+visibles dans le sélecteur via `spawn_agent`, en V1 et en V2 lorsque les substitutions de modèle
+sont exposées. Ces cinq modèles peuvent donc changer avec l’ordre du sélecteur, même si les
+candidats préférés d’OpenCodex restent identiques. La V1 ne reçoit aucune injection de liste
+préférée d’OpenCodex. La V2 peut recevoir en plus des consignes fondées sur les priorités naturelles
+si l’état du catalogue client le permet ; ces consignes ne réordonnent pas la liste annoncée par
+l’outil natif.
+
+`disabledModels` et `selectedModels` de chaque fournisseur
 restent des champs de visibilité, pas des contrôles d’ordre. Il n’existe aucun paramètre distinct
 `modelOrder`, `providerOrder` ou de carte de priorité.

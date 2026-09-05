@@ -166,7 +166,18 @@ Eski, yalnızca yönlendirilmiş satırlara uygulanan davranışı korumak için
 Tanımlanmamış, boş, yalnızca boşluk girdileri içeren veya yalnızca yönlendirilmiş kimliklerden oluşan
 listeler önceki davranışlarını korur.
 
-`modelPickerOrder`, `spawn_agent` için beş adaydan oluşan listeyi veya aday seçim önceliklerini
-değiştirmez. Yalnızca Codex seçicisinde görünen `priority` değişir; opencodex taşınan her satırın doğal
-önceliğini alt ajan seçimi için korur. `disabledModels` ve her sağlayıcının `selectedModels` alanı
+`modelPickerOrder`, OpenCodex'in alt ajan rehberliği için doğal önceliğe göre en fazla beş tercih
+edilen adayı seçen hesaplamasını korur. Taşınan her satırın doğal önceliği, yerel `priority` değerinden
+ayrı saklanır; yalnızca seçici sırasını değiştirmek bu hesaplamanın sonucunu değiştirmemelidir.
+Tam model adıyla geçersiz kılma uygunluğunu da kısıtlamaz: tanıtılan liste bir izin listesi değildir.
+Mevcut kimlik doğrulama, model, effort ve arka uç kısıtlamaları geçerliliğini korur.
+
+Yerel Codex, `spawn_agent` içinde tanıtılacak beş modeli yerel `priority` sırasındaki uygun ve
+seçicide görünür modellerden seçer. Bu, V1 ve model geçersiz kılmalarının sunulduğu V2 için geçerlidir.
+Dolayısıyla OpenCodex'in tercih edilen adayları değişmese bile, tanıtılan beş model seçici sırasıyla
+birlikte değişebilir. V1'e OpenCodex tercih listesi enjekte edilmez. V2, istemci katalog durumu izin
+verdiğinde ek olarak doğal önceliğe dayalı OpenCodex rehberliği alabilir; bu rehberlik yerel aracın
+tanıttığı listeyi yeniden sıralamaz.
+
+`disabledModels` ve her sağlayıcının `selectedModels` alanı
 görünürlüğü denetler. Ayrı bir `modelOrder`, `providerOrder` veya öncelik haritası ayarı yoktur.
