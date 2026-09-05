@@ -424,8 +424,9 @@ export interface OcxConfig {
    * their normal positions. Including a bare native id opts into ordering the complete
    * picker: listed ids appear first in array order, followed by unlisted rows in their
    * natural priority order. Exact catalog ids take precedence over equivalent raw/encoded
-   * routed ids; empty entries are ignored. The separate natural spawn
-   * priority is preserved, so display order does not change subagent candidates.
+   * routed ids; empty entries are ignored. The separate natural priority used by
+   * OpenCodex guidance is preserved. Native Codex's advertised five follow display
+   * priority and may change; exact-name override eligibility is not restricted by that list.
    * Unset or empty leaves catalog priorities unchanged.
    */
   modelPickerOrder?: string[];

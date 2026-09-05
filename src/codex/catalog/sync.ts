@@ -88,15 +88,15 @@ import {
 export const MAX_SPAWN_AGENT_MODEL_OVERRIDES = 5;
 
 // Base for config.modelPickerOrder display priorities (#1649). modelPickerOrder is a DISPLAY-ONLY
-// reordering of the Codex model picker: it rewrites a row's Codex-visible `priority` but never the
-// spawn_agent candidate window. The window is derived from SPAWN_PRIORITY_FIELD (the natural
-// priority captured before the override), so display order and spawn candidates are decoupled.
+// reordering of the Codex model picker: it rewrites a row's Codex-visible `priority` but not
+// OpenCodex's natural-priority guidance window. Native Codex advertisements still follow the
+// visible priority and can differ from that guidance window.
 export const PICKER_ORDER_PRIORITY_BASE = 1_000;
 
-// OpenCodex-private catalog field: the spawn_agent candidate priority a row would have WITHOUT
+// OpenCodex-private catalog field: the guidance candidate priority a row would have WITHOUT
 // modelPickerOrder. Codex ignores unknown catalog fields (same as opencodex_catalog_kind), so this
-// is invisible to Codex; effectiveSubagentRoster reads it so a display reorder cannot change which
-// rows are spawn_agent candidates. Absent on rows modelPickerOrder did not move.
+// is invisible to Codex; effectiveSubagentRoster reads it to keep OpenCodex guidance candidates
+// independent of display order. It does not freeze native advertisements. Absent on unmoved rows.
 export const SPAWN_PRIORITY_FIELD = "opencodex_spawn_priority";
 
 export type SpawnAgentSurface = "v1" | "v2";
@@ -154,7 +154,9 @@ export interface SubagentRosterExclusion {
 }
 
 export interface EffectiveSubagentRoster {
+  /** OpenCodex's natural-priority guidance projection, not captured native tool text. */
   candidates: EffectiveSubagentModel[];
+  /** Configured models within that projection; exact-name eligibility is a separate check. */
   advertised: EffectiveSubagentModel[];
   excluded: SubagentRosterExclusion[];
 }
@@ -191,8 +193,8 @@ export function effectiveSubagentRoster(
     .filter(({ entry }) => entry.visibility === "list")
     .filter(({ entry }) => surface !== "v2" || isEligibleV2SubagentEntry(entry))
     .sort((left, right) => {
-      // Spawn candidates rank by the natural priority (SPAWN_PRIORITY_FIELD when present), so a
-      // modelPickerOrder display reorder (#1649) can never change candidate membership. Rows the
+      // OpenCodex guidance candidates rank by natural priority (SPAWN_PRIORITY_FIELD when present),
+      // so modelPickerOrder does not change this projection. Native tool advertisements differ. Rows the
       // override did not move fall back to their Codex-visible `priority`.
       const spawnPriorityOf = (entry: RawEntry): number => {
         const spawn = entry[SPAWN_PRIORITY_FIELD];
@@ -330,6 +332,8 @@ export function deriveEntry(
   }
   if (template || codexForwardNativeCapabilityAlias) {
     const e = JSON.parse(JSON.stringify(codexForwardNativeCapabilityAlias ?? template)) as RawEntry;
+    // A cached template may carry display-order history; each new row owns its natural rank.
+    delete e[SPAWN_PRIORITY_FIELD];
     e.slug = slug;
     e.display_name = routedDisplayName(slug, model);
     e.description = desc;
@@ -518,25 +522,25 @@ export function buildCatalogEntriesFromObservedState({
   // catalog stays put across rebuilds. Featured rows keep their existing 0..N-1 band; when
   // modelPickerOrder is unset the helper is a no-op and every priority below is byte-identical to
   // before. The spawn_agent candidate window is derived separately from SPAWN_PRIORITY_FIELD, so
-  // this display reorder cannot change which rows are spawn candidates.
+  // this display reorder does not change OpenCodex's guidance candidate calculation.
   const pickerOrder = normalizeModelPickerOrder(modelPickerOrder);
   const pickerOrderRank = new Map(pickerOrder.map((slug, i) => [slug, i] as const));
   const pickerOrderActive = pickerOrder.length > 0;
   // The display band reuses the existing high priority tier (>= PICKER_ORDER_PRIORITY_BASE, the
   // same 1_000+ neighborhood account rows occupy), keeping listed rows visually after the featured
-  // band. Candidate membership does not depend on this — see SPAWN_PRIORITY_FIELD.
+  // band. OpenCodex guidance membership does not depend on this — see SPAWN_PRIORITY_FIELD.
   /**
    * Priority for a non-featured routed row that is explicitly LISTED in modelPickerOrder. Listed
    * slugs sort in declared order within the high picker-order display tier
    * (>= PICKER_ORDER_PRIORITY_BASE). This sets the Codex-visible `priority` only; the caller records
-   * the row's natural priority in SPAWN_PRIORITY_FIELD so the spawn_agent candidate window is
-   * unchanged. Returns undefined when the feature is off or the row is not listed, so those rows
+   * the row's natural priority in SPAWN_PRIORITY_FIELD for OpenCodex's unchanged guidance window.
+   * Returns undefined when the feature is off or the row is not listed, so those rows
    * keep their original assignment (default 5 / account 1_000+) untouched.
    *
    * Scope: only the generic routed `<provider>/<model>` rows call this (see the goModels loop
    * below). Native passthrough rows and account-qualified native rows keep their own priority
-   * logic and are intentionally not reordered here — this matches the documented contract on
-   * OcxConfig.modelPickerOrder (route native ordering through subagentModels instead).
+   * logic and are intentionally not reordered in this legacy builder pass. The final merge can
+   * apply complete ordering when the configured list includes a bare id.
    */
   const pickerOrderPriority = (slug: string, altSlug?: string): number | undefined => {
     if (!pickerOrderActive) return undefined;
@@ -658,9 +662,9 @@ export function buildCatalogEntriesFromObservedState({
       // Keep the generated account rows together in Codex's priority-sorted flat picker.
       e.priority = 1_000 + (typeof e.priority === "number" ? e.priority : 5);
     }
-    // #1649: modelPickerOrder is a DISPLAY-ONLY override. Record the natural priority spawn_agent
-    // must keep using, then let modelPickerOrder move only the Codex-visible `priority`. Featured
-    // rows are never overridden (their rank is authoritative for both display and spawn).
+    // The legacy routed-only builder pass keeps featured ranks and records natural priority
+    // before changing non-featured display priority. The final complete-order pass may move
+    // featured display rows too; OpenCodex guidance continues to use their natural ranks.
     if (rankHit === undefined) {
       const pickerPriority = pickerOrderPriority(slug, `${m.provider}/${m.id}`);
       if (pickerPriority !== undefined) {
@@ -792,7 +796,7 @@ function modelPickerRank(order: readonly string[]): (slug: string) => number | u
   return slug => exact.get(slug) ?? equivalent.get(slugEquivalenceKey(slug));
 }
 
-/** A picker order containing native ids orders the whole list, without changing spawn ranks. */
+/** Complete display ordering retains natural ranks for OpenCodex's separate guidance projection. */
 export function applyFullModelPickerOrder(entries: RawEntry[], order: readonly string[]): void {
   const pickerOrder = normalizeModelPickerOrder(order);
   if (!pickerOrder.some(slug => !slug.includes("/"))) return;

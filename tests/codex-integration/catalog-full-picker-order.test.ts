@@ -1,17 +1,17 @@
 import { routedSlug } from "../../src/providers/slug-codec";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { saveConfig } from "../../src/config";
+import { loadConfig, saveConfig } from "../../src/config";
+import { SUBAGENT_MODELS_VERSION } from "../../src/config/subagent-models";
 import type { OcxConfig } from "../../src/types";
 import { captureCatalogAdmissionSnapshot } from "../../src/codex/catalog-admission";
 import { convergeCodexCatalog } from "../../src/codex/convergence";
 import { loadBundledCodexCatalog, resetCatalogRuntimeStateForTests, syncCatalogModels } from "../../src/codex/catalog";
-import { setBundledCatalogCacheForTests } from "../../src/codex/catalog/bundled";
 import type { RawCatalog, RawEntry } from "../../src/codex/catalog/parsing";
 import { clearModelCache, markModelsFetchFailure } from "../../src/codex/model-cache";
-import { persistCodexRuntime, resetCodexRuntimeResolveCacheForTests, setCodexRuntimeResolveCacheForTests } from "../../src/codex/runtime";
+import { loadPersistedCodexRuntime, resetCodexRuntimeResolveCacheForTests, resolveCodexRuntime } from "../../src/codex/runtime";
 import { resetCodexModelEntitlementCacheForTests } from "../../src/codex/model-entitlements";
 import { resolveCodexCatalogSerializationDatabasePath, resolveEffectiveUserIdentity } from "../../src/codex/user-identity";
 import { CODEX_FORWARD_BASE_URL } from "../../src/providers/openai-tiers";
@@ -63,6 +63,40 @@ test("sync refreshes native spawn rank when featured models change", () => {
   const demoted = mergeCatalogEntriesForSync(promoted, [], baseline, ["opencode-go/glm-5.3"], false);
   applyFullModelPickerOrder(demoted, order);
   expect(demoted.find(entry => entry.slug === sol.slug)?.[SPAWN_PRIORITY_FIELD]).toBe(101);
+});
+
+test("fresh routed rows do not inherit a previously ordered native template's guidance rank", () => {
+  const ids = ["fresh-a", "fresh-b", "fresh-c", "fresh-d", "fresh-e", "fresh-f"];
+  const slugs = ids.map(id => routedSlug("opencode-go", id));
+  const featured = slugs.slice(0, 5);
+  const order = ["gpt-5.5", slugs[5]!, ...featured.toReversed()];
+  const template = deriveEntry(null, "gpt-5.5", "Previously ordered native", 0);
+  template[SPAWN_PRIORITY_FIELD] = 9;
+  const previousTemplate = structuredClone(template);
+  const rows = buildCatalogEntriesFromObservedState({
+    template,
+    gptSlugs: ["gpt-5.5"],
+    goModels: ids.map(id => ({
+      provider: "opencode-go", id,
+      reasoningEfforts: ["high", "xhigh"], defaultReasoningEffort: "xhigh",
+    })),
+    featured, modelPickerOrder: order,
+    wsEnabled: false, multiAgentMode: "v2", multiAgentV2Enabled: true,
+    exactComboSlugs: new Set(), accountSelectors: [],
+    suppressedBareNativeSlugs: new Set(), disabledNativeAccountSlugs: new Set(),
+  });
+
+  const featuredRows = featured.map(slug => rows.find(row => row.slug === slug)!);
+  expect(featuredRows.map(row => row[SPAWN_PRIORITY_FIELD] ?? row.priority)).toEqual([0, 1, 2, 3, 4]);
+  const expectedCandidates = featured.map(model => ({ model, efforts: ["high", "xhigh"] }));
+  const before = effectiveSubagentRoster(featured, "v2", rows);
+  expect(before.candidates).toEqual(expectedCandidates);
+  expect(before.advertised).toEqual(expectedCandidates);
+
+  applyFullModelPickerOrder(rows, order);
+  expect(effectiveSubagentRoster(featured, "v2", rows)).toEqual(before);
+  expect(rows.toSorted((a, b) => Number(a.priority) - Number(b.priority)).map(row => row.slug)).toEqual(order);
+  expect(template).toEqual(previousTemplate);
 });
 
 
@@ -146,6 +180,39 @@ describe("picker ordering through production catalog writers", () => {
   let codexHome: string;
   let catalogPath: string;
   let fetchCalls: number;
+  let runtimeCommand: string;
+
+  // Same executable-fixture protocol as codex-convergence-account-selectors.test.ts:
+  // a forced resolver refresh must receive the same version and catalog as a warm read.
+  function createRuntimeFixture(catalog: RawCatalog): string {
+    const script = join(root, "fixture-codex.js");
+    writeFileSync(script, [
+      'if (process.argv.includes("--version")) {',
+      '  console.log("codex-cli 0.145.0");',
+      '} else {',
+      `  process.stdout.write(${JSON.stringify(JSON.stringify(catalog))});`,
+      '}',
+    ].join("\n"));
+    if (process.platform === "win32") {
+      const command = join(root, "fixture-codex.cmd");
+      writeFileSync(command, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`);
+      return command;
+    }
+    const command = join(root, "fixture-codex");
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    writeFileSync(command, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(script)} "$@"\n`);
+    chmodSync(command, 0o755);
+    return command;
+  }
+
+  function assertRuntimeIdentity(): void {
+    const resolved = resolveCodexRuntime({ discoverAlternatives: false });
+    expect(resolved.runtime.command).toBe(runtimeCommand);
+    expect(resolved.runtime.version).toBe("0.145.0");
+    const persisted = loadPersistedCodexRuntime();
+    expect(persisted?.command).toBe(runtimeCommand);
+    expect(persisted?.selectedVersion).toBe("0.145.0");
+  }
 
   beforeEach(() => {
     previousEnv = envKeys.map(key => process.env[key]);
@@ -157,22 +224,19 @@ describe("picker ordering through production catalog writers", () => {
     mkdirSync(opencodexHome);
     process.env.CODEX_HOME = codexHome;
     process.env.OPENCODEX_HOME = opencodexHome;
-    const runtimeCommand = join(root, "fixture-codex");
-    process.env.CODEX_CLI_PATH = runtimeCommand;
     catalogPath = join(codexHome, "custom-catalog.json");
     writeFileSync(join(codexHome, "config.toml"),
       'model_catalog_json = "custom-catalog.json"\n[features]\nmulti_agent_v2 = true\n');
     resetCatalogRuntimeStateForTests();
     resetCodexRuntimeResolveCacheForTests();
     resetCodexModelEntitlementCacheForTests();
-    const runtime = { command: runtimeCommand, version: "0.145.0", source: "fallback" as const };
-    persistCodexRuntime(runtime);
-    setCodexRuntimeResolveCacheForTests({ runtime, failures: [] }, { discoverAlternatives: false });
     const native = deriveEntry(null, "gpt-5.5", "Native fixture", 9);
     const catalog = { models: [native] };
-    setBundledCatalogCacheForTests(runtime, catalog);
-    // Both runtime selection and bundled support are fixture-owned, before admission capture.
+    runtimeCommand = createRuntimeFixture(catalog);
+    process.env.CODEX_CLI_PATH = runtimeCommand;
+    // Resolve the real fixture executable before admission captures runtime provenance.
     expect(loadBundledCodexCatalog()?.models?.[0]?.slug).toBe("gpt-5.5");
+    assertRuntimeIdentity();
     writeFileSync(catalogPath, JSON.stringify(catalog));
     fetchCalls = 0;
     globalThis.fetch = (async () => {
@@ -205,6 +269,7 @@ describe("picker ordering through production catalog writers", () => {
       defaultProvider: "opencode-go",
       multiAgentMode: "v2",
       subagentModels: featured,
+      subagentModelsVersion: SUBAGENT_MODELS_VERSION,
       modelPickerOrder: order,
       providers: {
         openai: { adapter: "openai-responses", baseUrl: CODEX_FORWARD_BASE_URL, authMode: "forward" },
@@ -219,7 +284,13 @@ describe("picker ordering through production catalog writers", () => {
   }
 
   async function writeCatalog(writer: "convergence" | "retained", next: OcxConfig, degraded = false): Promise<RawEntry[]> {
+    assertRuntimeIdentity();
+    const requestedRoster = [...next.subagentModels!];
     saveConfig(next);
+    const saved = loadConfig();
+    expect(saved.subagentModelsVersion).toBe(SUBAGENT_MODELS_VERSION);
+    expect(saved.subagentModels).toEqual(requestedRoster);
+    expect(next.subagentModels).toEqual(requestedRoster);
     if (degraded) {
       // No cached/static rows: the caller must preserve the catalog already on disk.
       clearModelCache("opencode-go");
@@ -235,22 +306,28 @@ describe("picker ordering through production catalog writers", () => {
       expect(result.path).toBe(catalogPath);
       expect(result.skippedReason).toBeUndefined();
     }
+    assertRuntimeIdentity();
     expect(fetchCalls).toBe(0);
     return (JSON.parse(readFileSync(catalogPath, "utf8")) as RawCatalog).models ?? [];
   }
 
   function roster(rows: RawEntry[], featured: string[]) {
+    const beforeAssertions = JSON.stringify(rows);
     const result = effectiveSubagentRoster(featured, "v2", rows);
     expect(result.candidates.map(candidate => candidate.model)).toEqual(featured);
     expect(result.candidates).toHaveLength(5);
     expect(result.advertised).toEqual(result.candidates);
     for (const candidate of result.candidates) expect(candidate.efforts).toEqual(configuredEfforts);
     for (const slug of slugs) {
-      expect(rows.find(row => row.slug === slug)).toMatchObject({
-        default_reasoning_level: "xhigh",
-        supported_reasoning_levels: configuredEfforts.map(effort => expect.objectContaining({ effort })),
-      });
+      const row = rows.find(row => row.slug === slug);
+      expect(row).toBeDefined();
+      expect(row!.default_reasoning_level).toBe("xhigh");
+      const levels = row!.supported_reasoning_levels;
+      expect(Array.isArray(levels)).toBe(true);
+      expect((levels as Array<{ effort: string }>).map(level => level.effort)).toEqual(configuredEfforts);
     }
+    // Full catalog comparisons below must still compare untouched metadata, not matcher nodes.
+    expect(JSON.stringify(rows)).toBe(beforeAssertions);
     return result;
   }
 
