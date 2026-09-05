@@ -47,6 +47,14 @@ bun run dev:gui
 | **Storage** | 只读查看 CODEX_HOME 磁盘占用（会话、归档、数据库、附件）。可选归档清理：预览最旧 N%，默认隔离到 `CODEX_HOME/.trash`，或勾选后永久删除。**自动清理策略**为可选且**默认关闭**（`storageCleanupPolicy.enabled`）；可在 Storage 页配置阈值/目标/计划/模式，或点「立即运行」。可在 Storage 页从隔离区恢复（JSONL + 线程）。活动会话保持只读。Codex 锁定最新/活动的 `state_*.sqlite` 时拒绝清理与恢复。 |
 | **Stop** | 优雅地停止代理和已安装的后台服务，恢复原生 Codex 并退出（`POST /api/stop`）。在使用任务计划程序后端的 Windows 上，仪表板会拒绝并提示改用 `ocx stop`：任务结束后包装器仍可能重新拉起代理，只有运行在代理之外的 stop 才能在恢复客户端配置前确认这个重启窗口。被拒绝时不会做任何更改。 |
 
+### 筛选请求日志
+
+Logs 可组合界面、被拦截请求、提供商、完整模型名、状态、时间、速度和会话 ID，筛选当前已加载的日志。选项包含回退尝试；模型匹配忽略大小写及首尾空格，但不做部分匹配。日志中消失的选项恢复为全部。
+
+时间范围为最近 15 分钟、1 小时或 1 天；Logs 标签页每 30 秒更新一次，即使关闭自动刷新也会更新。速度按完整请求耗时计算每秒输出 token，分为小于 15、15 至小于 50、至少 50；启用速度筛选时排除无测量值的请求。成功为 2xx，错误为 4xx/5xx。
+
+显示匹配数与已加载总数；重置恢复全部行，并区分无匹配与空日志。界面选择支持方向键及 Home/End，不查询已加载范围之外的历史记录。
+
 ### 链接到某个部分
 
 布局只有一种，无需切换。Dashboard 的各个部分都有自己的地址：`#dashboard` 打开 Overview，`#dashboard/providers` 与 `#dashboard/models` 打开另外两个。刷新、收藏和后退都会保留当前所在的部分。**Logs** 同理，使用 `#logs` 与 `#logs/debug`。旧的 `#providers/workspace` 书签现在会跳转到 `#providers`。
@@ -141,7 +149,7 @@ GUI 是代理 JSON 管理 API 之上的轻量客户端。常用 endpoint 包括�
 | `PUT /api/codex-auth/active` · `PUT /api/codex-auth/auto-switch` · `PUT /api/codex-auth/failover` | 选择下一次请求使用的账号并配置账号池路由。 |
 | `GET /api/codex-auth/active` · `PUT /api/codex-auth/accounts/priority` | 读取实际生效的账号（含表示是否固定的 `pinned` 和指明被固定账号的 `pinnedAccountId`），并设置单个账号的选择顺序。 |
 | `POST /api/codex-auth/login` · `GET /api/codex-auth/login-status` | 通过浏览器登录添加池账号。 |
-| `GET /api/logs?tail=50&limit=20&offset=0&provider=...&status=5xx` | 使用 tail、provider、精确状态码或状态类别筛选近期请求元数据。`limit`/`offset` 从最新一行向前分页（`offset=0` 为最新一页）。响应为 `{ timeZone, total, logs }`，其中 `total` 为分页前的匹配行数。 |
+| `GET /api/logs?tail=50&limit=20&offset=0&provider=...&status=5xx` | 使用 tail、provider、精确状态码或状态类别筛选近期请求元数据。`limit`/`offset` 从最新一行向前分页（`offset=0` 为最新一页）。响应为 `{ timeZone, generatedAt, total, logs }`，其中 `total` 为分页前的匹配行数。 |
 | `GET` / `PUT /api/subagent-models` | 读取或设置五个置顶的 `spawn_agent` override 模型。 |
 | `POST /api/stop` | 停止代理/服务，恢复原生 Codex 并退出。在 Windows 任务计划程序后端会以 `respawnable_service` 拒绝，无法读取该状态时以 `service_state_unknown` 拒绝；两种情况都不会做任何更改。 |
 

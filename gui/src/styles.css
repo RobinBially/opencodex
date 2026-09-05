@@ -2149,6 +2149,13 @@ table.logs-table {
   gap: var(--space-2);
   margin-bottom: var(--space-3);
 }
+.logs-filter-status { display: inline-flex; align-items: center; gap: var(--space-2); margin-left: auto; }
+.logs-toolbar-secondary { margin-top: calc(var(--space-1) * -1); }
+.logs-filter-container { min-width: 0; }
+.logs-filter-container .logs-filter-field { min-width: 0; max-width: 100%; flex-wrap: wrap; }
+.logs-filter-container .logs-filter-field .input { min-width: 0; max-width: 100%; }
+.logs-filter-container .logs-filter-status { flex-wrap: wrap; max-width: 100%; }
+.logs-filter-container .logs-segmented { max-width: 100%; flex-wrap: wrap; }
 
 .logs-segmented {
   display: inline-flex;

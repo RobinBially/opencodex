@@ -48,6 +48,14 @@ bun run dev:gui
 | **ストレージ** | CODEX_HOME のディスク内訳（セッション、アーカイブ、DB、添付）を読み取り専用で表示。任意のアーカイブクリーンアップ: 最古 N% をプレビューし、既定では `CODEX_HOME/.trash` へ隔離、または明示チェックで完全削除。**自動クリーンアップ方針**はオプトインで**既定 OFF**（`storageCleanupPolicy.enabled`）。Storage ページでしきい値/目標/スケジュール/モードを設定するか **今すぐ実行**。隔離エントリは Storage ページから復元可能（JSONL + スレッド）。アクティブセッションは読み取り専用。最新/アクティブな `state_*.sqlite` がロック中はクリーンアップと復元を拒否。 |
 | **停止** | プロキシとインストールされたバックグラウンドサービスを正常終了しネイティブ Codex を復元した後終了します(`POST /api/stop`)。ただし Windows のタスク スケジューラ バックエンドではダッシュボードが拒否し、`ocx stop` の実行を促します。タスク終了後もラッパーがプロキシを再起動しうるため、クライアント設定を戻す前にその再起動区間を確認できるのはプロキシの外で動く stop だけです。拒否されたときは何も変更されません。 |
 
+### リクエストログの絞り込み
+
+Logsではサーフェス、インターセプトされたリクエスト、プロバイダー、完全なモデル名、ステータス、時間、速度、会話IDを組み合わせて、読み込み済みログを絞り込みます。選択肢にはフォールバック試行も含まれます。モデル名は大文字小文字と前後の空白を無視しますが、部分一致ではありません。ログから消えた選択肢は全件に戻ります。
+
+時間は直近15分・1時間・1日で、Logsタブでは自動更新をオフにしても30秒ごとに更新します。速度はリクエスト全体の時間あたりの毎秒出力トークン数で、15未満、15以上50未満、50以上です。速度フィルター中は測定不能な行を除外します。成功は2xx、エラーは4xx/5xxです。
+
+一致件数と読み込み総数を表示し、リセットで全行を復元します。一致なしと空ログを区別します。サーフェスは矢印キーとHome/Endで操作できます。読み込み範囲外の履歴は検索しません。
+
 ### セクションへのリンク
 
 レイアウトは 1 つだけなので、切り替える設定はありません。代わりに Dashboard の各セクションに URL があります。`#dashboard` は Overview、`#dashboard/providers` と `#dashboard/models` は残りの 2 つです。再読み込み・ブックマーク・戻る操作のいずれでも、表示していたセクションが保たれます。**Logs** も `#logs` と `#logs/debug` で同じように動作します。以前の `#providers/workspace` のブックマークは `#providers` に移動します。
@@ -149,7 +157,7 @@ GUI はプロキシの JSON 管理 API を使うシンクライアントです�
 | `PUT /api/codex-auth/active` · `PUT /api/codex-auth/auto-switch` · `PUT /api/codex-auth/failover` | 次のリクエストで使うアカウントとプールルーティングポリシーを設定します。 |
 | `GET /api/codex-auth/active` · `PUT /api/codex-auth/accounts/priority` | 実効アカウント（固定中かどうかを示す `pinned` と、固定されているアカウントを示す `pinnedAccountId` を含む）を読み、アカウント 1 件の選択順序を設定します。 |
 | `POST /api/codex-auth/login` · `GET /api/codex-auth/login-status` | ブラウザログインでプールアカウントを追加します。 |
-| `GET /api/logs?tail=50&limit=20&offset=0&provider=...&status=5xx` | tail、プロバイダー、正確な状態コードまたは状態等級で最近のリクエストメタデータを参照します。`limit`/`offset` は最新行から過去方向にページングします（`offset=0` が最新ページ）。応答は `{ timeZone, total, logs }` で、`total` はページング前の一致件数です。 |
+| `GET /api/logs?tail=50&limit=20&offset=0&provider=...&status=5xx` | tail、プロバイダー、正確な状態コードまたは状態等級で最近のリクエストメタデータを参照します。`limit`/`offset` は最新行から過去方向にページングします（`offset=0` が最新ページ）。応答は `{ timeZone, generatedAt, total, logs }` で、`total` はページング前の一致件数です。 |
 | `GET` / `PUT /api/subagent-models` | `spawn_agent` に優先公開するモデル 5 つを読むか設定します。 |
 | `POST /api/stop` | プロキシ/サービスを停止しネイティブ Codex を復元した後終了します。Windows タスク スケジューラ バックエンドでは `respawnable_service`、その状態を読み取れない場合は `service_state_unknown` で拒否し、どちらの場合も何も変更されません。 |
 
