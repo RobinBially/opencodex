@@ -145,6 +145,14 @@ describe("Cursor tool definitions", () => {
   });
 
   test("advertises and normalizes freeform tools as one required string input", () => {
+    // Independent wire contract: using the production constant as the expected value
+    // would let an incorrect constant validate both schema selection and protobuf output.
+    const expectedSchema = {
+      type: "object",
+      properties: { input: { type: "string" } },
+      required: ["input"],
+      additionalProperties: false,
+    };
     const tool: OcxTool = {
       name: "apply_patch",
       description: "Apply a patch",
@@ -152,14 +160,19 @@ describe("Cursor tool definitions", () => {
       freeform: true,
     };
 
-    expect(cursorToolInputSchema(tool)).toEqual(CURSOR_FREEFORM_INPUT_SCHEMA);
-    expect(cursorToolArgNormalizeSchema(tool)).toEqual(CURSOR_FREEFORM_INPUT_SCHEMA);
+    expect(CURSOR_FREEFORM_INPUT_SCHEMA).toEqual(expectedSchema);
+    expect(cursorToolInputSchema(tool)).toEqual(expectedSchema);
+    expect(cursorToolArgNormalizeSchema(tool)).toEqual(expectedSchema);
     const defs = buildCursorToolDefinitions([tool]);
-    expect(toJson(ValueSchema, fromBinary(ValueSchema, defs[0]!.inputSchema))).toEqual(CURSOR_FREEFORM_INPUT_SCHEMA);
+    expect(defs).toHaveLength(1);
+    expect(toJson(ValueSchema, fromBinary(ValueSchema, defs[0]!.inputSchema))).toEqual(expectedSchema);
 
     const codeModeExec: OcxTool = { name: "exec", description: "Run JavaScript", freeform: true };
-    expect(cursorToolInputSchema(codeModeExec)).toEqual(CURSOR_FREEFORM_INPUT_SCHEMA);
-    expect(cursorToolArgNormalizeSchema(codeModeExec)).toEqual(CURSOR_FREEFORM_INPUT_SCHEMA);
+    expect(cursorToolInputSchema(codeModeExec)).toEqual(expectedSchema);
+    expect(cursorToolArgNormalizeSchema(codeModeExec)).toEqual(expectedSchema);
+    const execDefs = buildCursorToolDefinitions([codeModeExec]);
+    expect(execDefs).toHaveLength(1);
+    expect(toJson(ValueSchema, fromBinary(ValueSchema, execDefs[0]!.inputSchema))).toEqual(expectedSchema);
   });
 
   test("rejects freeform tools that reuse bare shell bridge names", () => {
@@ -173,6 +186,12 @@ describe("Cursor tool definitions", () => {
   });
 
   test("preserves namespaced shell names and ordinary freeform/non-freeform contracts", () => {
+    const expectedFreeformSchema = {
+      type: "object",
+      properties: { input: { type: "string" } },
+      required: ["input"],
+      additionalProperties: false,
+    };
     const namespacedFreeform: OcxTool = {
       name: "exec_command",
       namespace: "mcp__custom",
@@ -180,12 +199,16 @@ describe("Cursor tool definitions", () => {
       parameters: {},
       freeform: true,
     };
-    expect(cursorToolInputSchema(namespacedFreeform)).toEqual(CURSOR_FREEFORM_INPUT_SCHEMA);
-    expect(cursorToolArgNormalizeSchema(namespacedFreeform)).toEqual(CURSOR_FREEFORM_INPUT_SCHEMA);
+    expect(cursorToolInputSchema(namespacedFreeform)).toEqual(expectedFreeformSchema);
+    expect(cursorToolArgNormalizeSchema(namespacedFreeform)).toEqual(expectedFreeformSchema);
+    const defs = buildCursorToolDefinitions([namespacedFreeform]);
+    expect(defs).toHaveLength(1);
+    expect(defs[0]?.toolName).toBe("mcp__custom__exec_command");
+    expect(toJson(ValueSchema, fromBinary(ValueSchema, defs[0]!.inputSchema))).toEqual(expectedFreeformSchema);
 
     const ordinaryFreeform: OcxTool = { name: "apply_patch", description: "Patch", parameters: {}, freeform: true };
-    expect(cursorToolInputSchema(ordinaryFreeform)).toEqual(CURSOR_FREEFORM_INPUT_SCHEMA);
-    expect(cursorToolArgNormalizeSchema(ordinaryFreeform)).toEqual(CURSOR_FREEFORM_INPUT_SCHEMA);
+    expect(cursorToolInputSchema(ordinaryFreeform)).toEqual(expectedFreeformSchema);
+    expect(cursorToolArgNormalizeSchema(ordinaryFreeform)).toEqual(expectedFreeformSchema);
 
     const ordinaryFunction: OcxTool = {
       name: "exec_command",

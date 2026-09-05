@@ -38,6 +38,7 @@ export const CURSOR_FREEFORM_INPUT_SCHEMA = {
   type: "object",
   properties: { input: { type: "string" } },
   required: ["input"],
+  additionalProperties: false,
 } as const;
 
 /**
