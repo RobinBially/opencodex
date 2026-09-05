@@ -663,3 +663,11 @@ index 114c699eaf..8dba5cfb55 100644
    "catalog-oauth-observation.test.ts": "codex-integration",
 
 ````
+
+## Consuming P refresh
+
+Parent preparation head is 29f98462c4a63cf217347c26668733169fd65736. Source #3571 remains OPEN at 0a935c5694229760c8c1cd5a62072107d8ae6696, and its full patch passes applicability on this parent. All four non-merge source commits identify voiys <matej2714@gmail.com>. The existing modelPickerOrder field survives config loading through the established root passthrough schema; no new persistence field is introduced. Preserve providerContextCapValues from 020.
+
+The initial roadmap listed source English/French edits, but six other existing model-ordering guides also contain the legacy native-order contract. MODIFY docs-site/src/content/docs/{ja,ko,ru,tr,zh-cn,zh-tw}/guides/model-ordering.md with the same complete-order opt-in, exact/equivalent matching, unchanged spawn roster and existing-list migration warning. Do not create new locales or alter unrelated routing semantics. The runtime/template output remains separately verified from any native client capture; a synthetic rendering must never be described as an actual client capture.
+
+Delegation: main carries the final source diff and owns SoT/commits; catalog worker supplies caller-level coverage and a captured generated-list comparison; docs worker owns the six translated guides; independent code reviewer checks priorities/retained paths; remote verifier uses isolated exact-head tests/docs plus a native client capture if the installed client can be run safely with synthetic state. No local test/build/typecheck and no real personal proxy/account calls. Final merge gates remain unchanged.
