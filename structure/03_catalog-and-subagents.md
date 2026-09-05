@@ -55,6 +55,11 @@ union clamp remains separate; it is not a per-model or per-client-version gramma
 Existing thread settings and the reported Desktop 0.153.4 gateway rejection require separate
 runtime evidence. Codex's native `ultra` mode is preserved and is not a literal API wire promise.
 
+Both catalog writers use `prepareReserveCatalogProjection` for the Desktop authless mode,
+which is enabled by default on loopback. They preserve the same observed Reserve source metadata
+and main-selector-only projection, so a settings refresh and a later full sync produce identical
+catalog bytes. Catalog presence remains separate from request-time upstream entitlement.
+
 When account selectors are enabled, the sync path may also observe exact, visible, API-supported
 OpenAI-family ids from Codex's user-owned catalog/cache. Only rows with native catalog provenance
 are trusted; unknown ids are carried through startup cache invalidation as hidden observations and
