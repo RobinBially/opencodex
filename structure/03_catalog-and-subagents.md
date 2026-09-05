@@ -249,6 +249,15 @@ sorts by, so a display reorder can never change candidate membership. That diver
 upstream's own ordering is the feature's purpose, not a defect —
 `tests/codex-integration/codex-catalog-model-picker-order.test.ts` pins it.
 
+A nonblank bare id in `modelPickerOrder` opts into complete-picker display ordering. Exact
+ids take precedence over raw/encoded equivalents; routed-only and empty lists keep the legacy
+ordering behavior. This does not change the separate `opencodex_spawn_priority` contract.
+Retained rows recompute their natural ranks from the current featured roster and account-selector
+stride before display order is applied, so a discovery outage cannot preserve an obsolete
+featured or picker rank. Canonical `opencode-go` rows retain their configured reasoning ladder
+both when generated and when merged from retained catalog state; synthetic max/ultra choices
+are not added to that provider's declared ladder.
+
 Full derivation with per-line citations: `devlog/_plan/260816_codexrs_multiagent_v2_and_history_perf/013_five_cap_v1_vs_v2.md`.
 
 ## Routed tool discovery and hosted search

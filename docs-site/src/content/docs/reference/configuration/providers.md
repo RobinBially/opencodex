@@ -812,15 +812,14 @@ ids with context `922000` and max input `922000`; OpenRouter seeds `openai/gpt-5
 }
 ```
 
-
 ## OpenCode Go reasoning efforts
 
 Go catalog rows preserve their configured reasoning efforts exactly, including during
 catalog sync. OpenCodex does not append synthetic `max` or `ultra` choices to these rows.
 Use `modelReasoningEfforts` and `modelDefaultReasoningEfforts` for each model's accepted
 upstream values. Key these per-provider maps by upstream model ID, not the routed
-`opencode-go/<model-id>` catalog slug. For example, Omen Alpha (`omen-alpha`) accepts `low`, `high`,
-and `max`; Muse Spark 1.3 Contributor (`muse-spark-1.3-contributor`) accepts `minimal`, `low`, `medium`, `high`, and `xhigh` (Go endpoint validation, 2026-09-05).
+`opencode-go/<model-id>` catalog slug. For example, a configured `["high", "max"]` list
+remains exactly those two choices; a configured `["high", "xhigh"]` list does not gain `max`.
 See the [OpenCode Go model list](https://opencode.ai/docs/go/#models) for the current roster.
 A configured subset can exclude the lower tiers. Other providers retain their existing behavior.
 
