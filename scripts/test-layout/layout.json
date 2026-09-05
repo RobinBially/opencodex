@@ -720,6 +720,7 @@
     "lab-evidence-sanitization.test.ts": "lab",
     "lab-fabric-outcome-validation.test.ts": "lab",
     "lab-fabric-persistence-boundary.test.ts": "lab",
+    "lab-fabric-producer-deadline.test.ts": "lab",
     "lab-fabric-task.test.ts": "lab",
     "lab-installation-salt-cache.test.ts": "lab",
     "lab-ledger-mutation-lock.test.ts": "lab",
