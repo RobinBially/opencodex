@@ -403,12 +403,18 @@ test("manual models replace management rows with the same provider/id and deleti
   config.customModels.push({ id: "manual-qualified", provider: "openai", modelId: qualifiedId });
   const rows = await listManagementModelRows(config,{entitlementWaitMs:0});
   expect(rows.filter(row=>row.provider==="openai" && row.id==="gpt-5.5")).toEqual([
-    expect.objectContaining({namespaced:"openai/gpt-5.5",custom:true,customId:"manual-gpt",contextWindow:128_000}),
+    expect.objectContaining({namespaced:"openai/gpt-5.5",custom:true,customId:"manual-gpt",contextWindow:128_000,fastRowAvailable:true}),
   ]);
   expect(rows.filter(row=>row.provider==="google-antigravity" && row.id==="gemini-3.1-pro")).toHaveLength(1);
   expect(rows.filter(row => row.id === qualifiedId && row.native)).toEqual([
     expect.objectContaining({ namespaced: qualifiedId, provider: "openai", native: true }),
   ]);
+  config.disabledModels = ["openai/gpt-5.5"];
+  const disabledRows = await listManagementModelRows(config, { entitlementWaitMs: 0 });
+  expect(disabledRows.find(row => row.namespaced === "openai/gpt-5.5")).toMatchObject({
+    custom: true, disabled: true, fastRowAvailable: false,
+  });
+  config.disabledModels = [];
   config.customModels = [];
   const restored = await listManagementModelRows(config,{entitlementWaitMs:0});
   expect(restored.some(row => row.id === qualifiedId && row.native)).toBe(true);
