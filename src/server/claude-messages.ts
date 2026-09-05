@@ -26,7 +26,7 @@ import {
 } from "../claude/outbound";
 import { clearableDeadline, idleDeadline } from "../lib/abort";
 import { estimateTokens } from "../lib/token-estimate";
-import { NoEligiblePolicyCandidateError, routeModel } from "../router";
+import { NoEligiblePolicyCandidateError, UnknownRoutingPolicyError, routeModel } from "../router";
 import { evidenceFromBody } from "../routing/request-evidence";
 import { resolveWireProtocolOverride } from "./adapter-resolve";
 import type { OcxConfig } from "../types";
@@ -763,6 +763,11 @@ async function handleClaudeMessagesWithBudget(
       if (ladder !== undefined && ladder.length === 0) delete internalBody.reasoning;
     }
   } catch (err) {
+    if (err instanceof UnknownRoutingPolicyError) {
+      logCtx.requestedModel = requestedModel;
+      if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 404, { closeReason: "non_stream" });
+      return anthropicErrorResponse(404, err.message, "invalid_request_error");
+    }
     if (err instanceof NoEligiblePolicyCandidateError) {
       logCtx.routeDecision = err.trace;
       if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 404, { closeReason: "non_stream" });

@@ -2,6 +2,17 @@
 
 Depends on wp1 and its corrected Chat converter. One full PABCD cycle.
 
+Delegated B lanes (user reconfirmed unlimited useful parallelism): worker A exclusively
+edits tests/responses/openai-responses-passthrough.test.ts; worker B exclusively adds
+the HTTP regression in tests/responses/chat-completions-endpoint.test.ts. Main owns
+public docs, structure, devlog and git/CI. C reviewers are read-only and independent.
+All lanes prohibit local test suites, services, config/auth and git/FSM mutation.
+
+User steering during B: all image representations must be audited before merge. This
+cycle now publishes the wire-contract child; the original exact-head CI/merge/ancestry
+criterion is unchanged and moves to appended wp3 after the expanded audit. No criterion
+is dropped or marked met early. Only existing 020 implementation runs in this B.
+
 ## MODIFY tests/responses/openai-responses-passthrough.test.ts
 
 Import real chatCompletionsToResponsesBody, anthropicToResponsesBody,
@@ -38,6 +49,10 @@ existing Chat-to-Responses HTTP regression (line 2834). POST a user image with h
 detail and a paired tool screenshot to mock/grok-4.5; consume the stream and assert
 one captured /responses body with unchanged ordered image parts. This is real HTTP
 route proof in CI, not real-model OCR or canonical account authentication.
+The manual HTTP probe showed that data-only mock Responses frames don't satisfy the
+native event-name terminal observer. Add matching `event: response.output_text.delta`
+and `event: response.completed` fields to mockDualWireUpstream's existing frames;
+preserve all body assertions and require `[DONE]` on the new HTTP cases.
 
 ## MODIFY structure/04_transports-and-sidecars.md
 

@@ -122,8 +122,8 @@ function mockDualWireUpstream() {
 
       if (url.pathname.endsWith("/responses")) {
         const frames = [
-          `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok" })}\n\n`,
-          `data: ${JSON.stringify({
+          `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok" })}\n\n`,
+          `event: response.completed\ndata: ${JSON.stringify({
             type: "response.completed",
             response: {
               id: "resp_1",
@@ -2931,6 +2931,94 @@ test("inbound chat-completions honors the override when stripping sampling (#404
   } finally {
     await server.stop(true);
     upstream.stop(true);
+  }
+});
+
+test.each([
+  { model: "grok-4.5", pathname: "/v1/responses" },
+  { model: "gemini-3-pro", pathname: "/v1/chat/completions" },
+])("inbound chat images and paired screenshots survive the $model wire", async ({ model, pathname }) => {
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+  const screenshot = "https://example.com/tool-screenshot.png";
+  const { server: upstream, captured } = mockDualWireUpstream();
+  let server: ReturnType<typeof startServer> | undefined;
+  try {
+    saveConfig(dualWireConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
+    server = startServer(0);
+    const response = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: `mock/${model}`,
+        stream: true,
+        // Force the Chat sibling through Responses translation, not native Chat passthrough.
+        store: true,
+        messages: [
+          { role: "user", content: [
+            { type: "text", text: "Inspect this image." },
+            { type: "image_url", image_url: { url: png, detail: "high" } },
+            { type: "text", text: "Compare it with the screenshot." },
+          ] },
+          { role: "assistant", content: null, tool_calls: [
+            { id: "call_screenshot", type: "function", function: { name: "screenshot", arguments: "{}" } },
+          ] },
+          { role: "tool", tool_call_id: "call_screenshot", content: [
+            { type: "text", text: "Before screenshot." },
+            { type: "image_url", image_url: { url: screenshot, detail: "low" } },
+            { type: "text", text: "After screenshot." },
+            { type: "image_url", image_url: { url: png, detail: "auto" } },
+          ] },
+        ],
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("[DONE]");
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.pathname).toBe(pathname);
+    expect(captured[0]!.body.model).toBe(model);
+    if (pathname === "/v1/responses") {
+      expect(captured[0]!.body.input).toEqual([
+        { type: "message", role: "user", content: [
+          { type: "input_text", text: "Inspect this image." },
+          { type: "input_image", image_url: png, detail: "high" },
+          { type: "input_text", text: "Compare it with the screenshot." },
+        ] },
+        { type: "function_call", call_id: "call_screenshot", name: "screenshot", arguments: "{}" },
+        { type: "function_call_output", call_id: "call_screenshot", output: [
+          { type: "input_text", text: "Before screenshot." },
+          { type: "input_image", image_url: screenshot, detail: "low" },
+          { type: "input_text", text: "After screenshot." },
+          { type: "input_image", image_url: png, detail: "auto" },
+        ] },
+      ]);
+    } else {
+      const messages = captured[0]!.body.messages as Array<Record<string, unknown>>;
+      const conversation = messages.filter(message => message.role !== "system");
+      expect(conversation.map(message => message.role)).toEqual(["user", "assistant", "tool", "user"]);
+      expect(conversation[0]).toEqual({ role: "user", content: [
+        { type: "text", text: "Inspect this image." },
+        { type: "image_url", image_url: { url: png, detail: "high" } },
+        { type: "text", text: "Compare it with the screenshot." },
+      ] });
+      expect(conversation[1]!.tool_calls).toEqual([
+        { id: "call_screenshot", type: "function", function: { name: "screenshot", arguments: "{}" } },
+      ]);
+      expect(conversation[2]).toEqual({
+        role: "tool", tool_call_id: "call_screenshot", content: "Before screenshot.After screenshot.",
+      });
+      expect(conversation[3]).toEqual({ role: "user", content: [
+        { type: "text", text: "[ocx] image output from the preceding tool result(s):" },
+        { type: "image_url", image_url: { url: screenshot, detail: "low" } },
+        { type: "image_url", image_url: { url: png, detail: "auto" } },
+      ] });
+    }
+  } finally {
+    try {
+      await server?.stop(true);
+    } finally {
+      await upstream.stop(true);
+    }
   }
 });
 

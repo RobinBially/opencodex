@@ -9,6 +9,7 @@ import type { OcxProviderConfig } from "../../types";
 import type { WsData } from "../ws-bridge";
 import { waitForProviderRequestSlot } from "../../providers/request-pacing";
 import { withUpstreamHttpVersion } from "../../lib/upstream-http-version";
+import type { CodexWsQuotaObserver } from "./codex-ws-metadata";
 
 export { withUpstreamHttpVersion };
 
@@ -56,6 +57,8 @@ export interface ProviderFetchOptions {
   modelId?: string;
   /** One pacing slot was acquired immediately before this fetch wrapper was created. */
   pacingSlotAcquired?: boolean;
+  /** Captured selected-account observer, attached before the native WS send. */
+  onCodexWsQuota?: CodexWsQuotaObserver;
 }
 
 export function providerFetch(
@@ -82,7 +85,7 @@ export function providerFetch(
       // used, protocol pin included: a WS turn that falls back is serving the
       // request over HTTP, and dropping the provider's `upstreamHttpVersion`
       // there would silently negotiate a transport the operator ruled out.
-      return codexWsUpstreamFetch(input, init, httpFetch, runtime);
+      return codexWsUpstreamFetch(input, init, httpFetch, runtime, options.onCodexWsQuota);
     }
     return httpFetch(input, init);
   };

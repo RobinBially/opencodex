@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { createOpenAIChatAdapter } from "../../src/adapters/openai-chat";
 import { createResponsesPassthroughAdapter as createResponsesPassthroughAdapterProduction } from "../../src/adapters/openai-responses";
 import { openaiResponsesUrl } from "../../src/adapters/openai-responses-url";
+import { chatCompletionsToResponsesBody } from "../../src/chat/inbound";
+import { anthropicToResponsesBody } from "../../src/claude/inbound";
+import { parseRequest } from "../../src/responses/parser";
 import { enrichProviderFromRegistry, providerConfigSeed } from "../../src/providers/derive";
 import { getProviderRegistryEntry } from "../../src/providers/registry";
 import { XAI_GROK_CLI_BASE_URL } from "../../src/providers/xai-transport";
@@ -24,6 +28,120 @@ const provider = {
   baseUrl: "https://chatgpt.com/backend-api/codex",
   authMode: "forward" as const,
 };
+
+describe("external image wire matrix", () => {
+  // Same decodable 1x1 PNG as anthropic-image-normalize.test.ts; no fetch is needed.
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const dataUrl = `data:image/png;base64,${png}`;
+  const httpsUrl = "https://images.example/second.png";
+  const keyed = { adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", authMode: "key" as const, apiKey: "test-key" };
+  const ingresses = [
+    {
+      name: "Chat", convert: chatCompletionsToResponsesBody,
+      images: [
+        { type: "image_url", image_url: { url: dataUrl, detail: "high" } },
+        { type: "image_url", image_url: { url: httpsUrl, detail: "low" } },
+      ],
+      call: { role: "assistant", tool_calls: [{ id: "call_image", type: "function", function: { name: "screenshot", arguments: "{}" } }] },
+      responsesImages: [
+        { type: "input_image", image_url: dataUrl, detail: "high" },
+        { type: "input_image", image_url: httpsUrl, detail: "low" },
+      ],
+      chatImages: [
+        { type: "image_url", image_url: { url: dataUrl, detail: "high" } },
+        { type: "image_url", image_url: { url: httpsUrl, detail: "low" } },
+      ],
+    },
+    {
+      name: "Claude", convert: anthropicToResponsesBody,
+      images: [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: png } },
+        { type: "image", source: { type: "url", url: httpsUrl } },
+      ],
+      call: { role: "assistant", content: [{ type: "tool_use", id: "call_image", name: "screenshot", input: {} }] },
+      responsesImages: [
+        { type: "input_image", image_url: dataUrl },
+        { type: "input_image", image_url: httpsUrl },
+      ],
+      chatImages: [
+        { type: "image_url", image_url: { url: dataUrl } },
+        { type: "image_url", image_url: { url: httpsUrl } },
+      ],
+    },
+  ];
+
+  for (const ingress of ingresses) {
+    for (const placement of ["user", "tool", "image-only tool"]) {
+      for (const target of ["API-key Responses", "ChatGPT forward", "Chat"]) {
+        test(`${ingress.name} ${placement} images -> ${target}`, async () => {
+          const isTool = placement !== "user";
+          const imageOnly = placement === "image-only tool";
+          const content = [...(imageOnly ? [] : [{ type: "text", text: "screenshot" }]), ...structuredClone(ingress.images)];
+          const result = ingress.name === "Chat"
+            ? { role: "tool", tool_call_id: "call_image", content }
+            : { role: "user", content: [{ type: "tool_result", tool_use_id: "call_image", content }] };
+          const raw = {
+            model: "test-model", stream: true,
+            messages: isTool
+              ? [structuredClone(ingress.call), result, { role: "user", content: "continue" }]
+              : [{ role: "user", content }],
+          };
+          const original = structuredClone(raw);
+          const translated = ingress.convert(raw);
+          const translatedBefore = structuredClone(translated);
+          const parsed = parseRequest(translated);
+          const adapter = target === "Chat"
+            ? withTestTranslatorBudget(createOpenAIChatAdapter({ ...keyed, adapter: "openai-chat" }))
+            : createResponsesPassthroughAdapter(target === "ChatGPT forward" ? provider : keyed);
+          const request = await adapter.buildRequest(parsed, { headers: new Headers() });
+          const body = JSON.parse(request.body) as { model: string; input?: unknown[]; messages?: unknown[] };
+          expect(request.url).toBe(target === "ChatGPT forward"
+            ? "https://chatgpt.com/backend-api/codex/responses"
+            : target === "Chat" ? "https://api.openai.com/v1/chat/completions" : "https://api.openai.com/v1/responses");
+          expect(body.model).toBe("test-model");
+          // Expected payloads are hand-authored, never taken from translator/parser output.
+          if (target === "Chat") {
+            expect(body.messages).toEqual(isTool ? [
+              { role: "assistant", content: "", tool_calls: [{ id: "call_image", type: "function", function: { name: "screenshot", arguments: "{}" } }] },
+              { role: "tool", tool_call_id: "call_image", content: imageOnly ? "[image][image]" : "screenshot" },
+              { role: "user", content: [{ type: "text", text: "[ocx] image output from the preceding tool result(s):" }, ...ingress.chatImages] },
+              { role: "user", content: "continue" },
+            ] : [{ role: "user", content: [{ type: "text", text: "screenshot" }, ...ingress.chatImages] }]);
+          } else {
+            const expectedContent = [...(imageOnly ? [] : [{ type: "input_text", text: "screenshot" }]), ...ingress.responsesImages];
+            expect(body.input).toEqual(isTool ? [
+              { type: "function_call", call_id: "call_image", name: "screenshot", arguments: "{}" },
+              { type: "function_call_output", call_id: "call_image", output: expectedContent },
+              { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] },
+            ] : [{ type: "message", role: "user", content: expectedContent }]);
+          }
+          expect(raw).toEqual(original);
+          expect(translated).toEqual(translatedBefore);
+        });
+      }
+    }
+
+    test(`${ingress.name} orphan image-only output survives canonical forward repair`, async () => {
+      const content = structuredClone(ingress.images);
+      const raw = { model: "test-model", messages: [ingress.name === "Chat"
+        ? { role: "tool", tool_call_id: "call_orphan", content }
+        : { role: "user", content: [{ type: "tool_result", tool_use_id: "call_orphan", content }] }],
+      };
+      const original = structuredClone(raw);
+      const translated = { ...ingress.convert(raw), previous_response_id: "resp_missing" };
+      const translatedBefore = structuredClone(translated);
+      const request = await createResponsesPassthroughAdapter(provider).buildRequest(parseRequest(translated));
+      const body = JSON.parse(request.body) as { previous_response_id?: string; input: unknown[] };
+      expect(body.previous_response_id).toBeUndefined();
+      expect(body.input).toEqual([{
+        type: "message", role: "user",
+        content: [{ type: "input_text", text: "[tool output for call_orphan]" }, ...ingress.responsesImages],
+      }]);
+      expect(raw).toEqual(original);
+      expect(translated).toEqual(translatedBefore);
+    });
+  }
+});
 
 test("noncanonical forward providers cannot receive caller or runtime credentials", () => {
   const userInfoUrl = new URL("https://chatgpt.com/backend-api/codex");

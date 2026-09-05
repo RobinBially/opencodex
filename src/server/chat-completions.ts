@@ -22,7 +22,7 @@ import { classifyError, cyberPolicyErrorType, CYBER_POLICY_ERROR_CODE, isCyberPo
 import { redactSecretString } from "../lib/redact";
 import { resolveClientRetryAfter } from "../lib/retry-after";
 import { estimateTokens } from "../lib/token-estimate";
-import { NoEligiblePolicyCandidateError, routeModel } from "../router";
+import { NoEligiblePolicyCandidateError, UnknownRoutingPolicyError, routeModel } from "../router";
 import { evidenceFromBody } from "../routing/request-evidence";
 import { resolveWireProtocolOverride } from "./adapter-resolve";
 import type { OcxConfig } from "../types";
@@ -146,6 +146,11 @@ async function handleChatCompletionsWithBudget(
     }
     if (!effortRow && isNativeChatRouteEligible(route, chatBody)) chatNativeRoute = route;
   } catch (err) {
+    if (err instanceof UnknownRoutingPolicyError) {
+      logCtx.requestedModel = requestedModel;
+      if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 404, { closeReason: "non_stream" });
+      return chatCompletionsErrorResponse(404, err.message, "invalid_request_error");
+    }
     if (err instanceof NoEligiblePolicyCandidateError) {
       logCtx.routeDecision = err.trace;
       if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 404, { closeReason: "non_stream" });

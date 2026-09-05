@@ -762,6 +762,7 @@
   "process-state.test.ts": "service",
   "project-config-warnings.test.ts": "codex-integration",
   "provider-account-quota-persistence.test.ts": "providers",
+  "provider-account-quota-routes.test.ts": "server",
   "provider-account-quota.test.ts": "providers",
   "provider-api-keys.test.ts": "providers",
   "provider-capacity.test.ts": "providers",
