@@ -231,6 +231,60 @@ describe("policy capability evidence uses the effective provider", () => {
     expect(evidence[2]?.capability).toBeUndefined();
   });
 
+  for (const unavailable of ["missing", "disabled"] as const) {
+    test.each(["allow", "penalize", "exclude"] as const)(
+      `${unavailable} first candidate is excluded under %s unknown policy`,
+      capability => {
+        // Empty requirements prevent another capability guard from masking availability.
+        const config = policyConfig("local", {
+          adapter: "openai-chat", baseUrl: loopback, allowPrivateNetwork: true,
+        }, "local-model", {});
+        if (unavailable === "disabled") {
+          config.providers.disabled = { ...config.providers.local!, disabled: true };
+        }
+        const profile = config.routingProfiles!.guarded!;
+        profile.candidates.unshift({ provider: unavailable, model: "local-model" });
+        profile.unknownEvidence = { ...profile.unknownEvidence, capability };
+
+        for (const withSibling of [true, false]) {
+          if (!withSibling) profile.candidates.pop();
+          const resolved: string[] = [];
+          const evidence = assemblePolicyCandidateEvidence(
+            config, getRoutingProfile(config, "guarded")!, Date.now(), {
+              routedProviderConfig: (name, provider) => {
+                resolved.push(name);
+                return routedProviderConfig(name, provider);
+              },
+            },
+          );
+          expect(resolved).toEqual(withSibling ? ["local"] : []);
+          expect(evidence).toHaveLength(withSibling ? 2 : 1);
+          expect(evidence[0]?.routeResolutionFailed).toBe(true);
+          expect(evidence[0]?.capability).toBeUndefined();
+          const evaluation = evaluatePolicyProfile(config, "guarded", {}, evidence);
+          expect(evaluation.selectedIndex).toBe(withSibling ? 1 : null);
+          expect(evaluation.candidates[0]).toMatchObject({
+            provider: unavailable,
+            eligible: false,
+            requirements: [],
+            exclusions: [{ code: "route-unavailable" }],
+          });
+          if (withSibling) {
+            expect(evidence[1]?.routeResolutionFailed).toBeUndefined();
+            expect(evidence[1]?.capability?.tools).toBe(true);
+            expect(evaluation.candidates[1]?.eligible).toBe(true);
+            const route = routeModel(config, "policy/guarded");
+            expect(route.providerName).toBe("local");
+            expect(route.routeDecision?.candidates.map(candidate => candidate.eligible)).toEqual([false, true]);
+            expect(route.routeDecision?.candidates[0]?.exclusions).toEqual([{ code: "route-unavailable" }]);
+          } else {
+            expect(() => routeModel(config, "policy/guarded")).toThrow(NoEligiblePolicyCandidateError);
+          }
+        }
+      },
+    );
+  }
+
   test.each(["allow", "penalize", "exclude"] as const)(
     "an unresolved first candidate is excluded when unknown capabilities are %s",
     capability => {
