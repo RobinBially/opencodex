@@ -167,7 +167,7 @@ GUI — это тонкий клиент поверх JSON-API управлен�
 | `PUT /api/codex-auth/active` · `PUT /api/codex-auth/auto-switch` · `PUT /api/codex-auth/failover` | Выбор аккаунта для следующего запроса и настройка маршрутизации пула. |
 | `GET /api/codex-auth/active` · `PUT /api/codex-auth/accounts/priority` | Чтение эффективного аккаунта (включая признак закрепления `pinned` и закреплённый аккаунт `pinnedAccountId`) и установка порядка выбора для одного аккаунта. |
 | `POST /api/codex-auth/login` · `GET /api/codex-auth/login-status` | Добавление аккаунта пула через вход в браузере. |
-| `GET /api/logs?tail=50&limit=20&offset=0&provider=...&status=5xx` | Чтение метаданных недавних запросов с необязательными фильтрами tail, провайдера и точного/классового статуса. `limit`/`offset` листают назад от самой новой строки (`offset=0` — последняя страница). Ответ: `{ timeZone, total, logs }`, где `total` — число совпадений до пагинации. |
+| `GET /api/logs?tail=50&limit=20&offset=0&provider=...&status=5xx` | Чтение метаданных недавних запросов с необязательными фильтрами tail, провайдера и точного/классового статуса. `limit`/`offset` листают назад от самой новой строки (`offset=0` — последняя страница). Ответ: `{ timeZone, generatedAt, total, logs }`, где `total` — число совпадений до пагинации. |
 | `GET` / `PUT /api/subagent-models` | Чтение или настройка пяти выделенных моделей переопределения `spawn_agent`. |
 | `POST /api/stop` | Остановка прокси/сервиса, восстановление нативного Codex и выход. Отклоняется с `respawnable_service` на бэкенде планировщика заданий Windows и с `service_state_unknown`, когда это состояние не удаётся прочитать; в обоих случаях ничего не изменяется. |
 

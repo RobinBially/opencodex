@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act, createElement, useState } from "react";
 import type { Root } from "react-dom/client";
@@ -121,7 +121,7 @@ test("LogsFilterBar speed choices have non-overlapping bounds and clear both bou
   });
 });
 
-test("LogsFilterBar reset clears multiple fields and removes the count and reset control", async () => {
+test.each(["pointer", "keyboard"] as const)("LogsFilterBar %s reset restores focus to All and clears every field", async activation => {
   await withFilterBar({
     ...DEFAULT_LOG_FILTER_STATE, surface: "grok", status: "errors", provider: "xai",
     model: "model-a", timeWindow: "1h", minTokPerSec: 50, interceptedOnly: true,
@@ -132,7 +132,23 @@ test("LogsFilterBar reset clears multiple fields and removes the count and reset
     expect(reset).not.toBeNull();
     reset.focus();
     expect(document.activeElement).toBe(reset);
-    await act(async () => { reset.click(); });
+    const all = ui.container.querySelector<HTMLButtonElement>("#logs-surface-all")!;
+    const focus = jest.spyOn(all, "focus");
+    try {
+      // Native buttons dispatch click with detail=0 for keyboard activation.
+      // Browser QA separately exercises Enter/Space's native event synthesis.
+      await act(async () => {
+        reset.dispatchEvent(new ui.win.MouseEvent("click", {
+          bubbles: true, cancelable: true, detail: activation === "keyboard" ? 0 : 1,
+        }));
+      });
+      expect(document.activeElement).toBe(all);
+      expect(all.getAttribute("aria-checked")).toBe("true");
+      expect(all.tabIndex).toBe(0);
+      expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    } finally {
+      focus.mockRestore();
+    }
     expect(ui.filters()).toEqual(DEFAULT_LOG_FILTER_STATE);
     expect(ui.container.querySelector(".logs-filter-status")).toBeNull();
     expect(ui.container.querySelector<HTMLInputElement>('input[type="search"]')!.value).toBe("");

@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { TFn } from "../i18n/shared";
 import { IconX } from "../icons";
 import { formatProviderDisplayName } from "../provider-icons";
@@ -18,6 +19,11 @@ interface LogsFilterBarProps {
 export function LogsFilterBar({
   filters, options, hasActiveFilters, filteredCount, totalCount, t, onFilterChange, onResetFilters,
 }: LogsFilterBarProps) {
+  const allSurfaceRef = useRef<HTMLButtonElement>(null);
+  const resetFilters = () => {
+    onResetFilters();
+    allSurfaceRef.current?.focus({ preventScroll: true });
+  };
   const currentSpeed = filters.maxTokPerSec === 15
     ? "slow"
     : filters.minTokPerSec === 15 && filters.maxTokPerSec === 50
@@ -43,6 +49,7 @@ export function LogsFilterBar({
           {(["all", "claude", "codex", "grok"] as const).map(surface => (
             <button
               key={surface}
+              ref={surface === "all" ? allSurfaceRef : undefined}
               type="button"
               role="radio"
               aria-checked={filters.surface === surface}
@@ -118,7 +125,7 @@ export function LogsFilterBar({
         {hasActiveFilters && (
           <div className="logs-filter-status">
             <span className="muted text-control">{t("logs.filter.showingCount", { count: filteredCount, total: totalCount })}</span>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={onResetFilters}><IconX /> {t("logs.filter.reset")}</button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={resetFilters}><IconX /> {t("logs.filter.reset")}</button>
           </div>
         )}
       </div>

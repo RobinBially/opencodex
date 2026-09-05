@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useI18n, LOCALES, type TFn } from "../i18n/shared";
 import { formatProviderDisplayName } from "../provider-icons";
@@ -13,6 +13,7 @@ import { DataSurfaceSkeleton } from "../components/data-surface";
 import { EmptyState, Notice } from "../ui";
 import Debug from "./Debug";
 import { LogsFilterBar } from "./logs-filter-bar";
+import { logsClockAnchor, logsClockNow, type LogsClockAnchor } from "./logs-clock";
 import { DEFAULT_LOG_FILTER_STATE, extractLogFilterOptions, filterLogs, hasActiveLogFilters, type LogFilterState } from "./logs-filter";
 
 import type { LogsTab } from "./logs-tab-keydown";
@@ -381,6 +382,21 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   const [detail, setDetail] = useState<LogEntry | null>(null);
   const [filters, setFilters] = useState<LogFilterState>(DEFAULT_LOG_FILTER_STATE);
   const [filterClockNow, setFilterClockNow] = useState(() => Date.now());
+  const filterClockRef = useRef<{
+    key: string; anchor?: LogsClockAnchor; active: boolean; request: number;
+  }>({ key: resourceKey, active: false, request: 0 });
+  // Invalidate the old resource at commit, before passive resource-loader effects.
+  // A late body read must not mutate this page's clock, cache or retry state.
+  useLayoutEffect(() => {
+    const clock = { key: resourceKey, active: true, request: 0 };
+    filterClockRef.current = clock;
+    setFilterClockNow(Date.now());
+    return () => { clock.active = false; };
+  }, [resourceKey]);
+  const readFilterClockNow = useCallback(() => {
+    const clock = filterClockRef.current;
+    return logsClockNow(clock.key === resourceKey ? clock.anchor : undefined, performance.now(), Date.now());
+  }, [resourceKey]);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const logRetryRef = useRef<{ key: string; failures: number; nextAttemptAt: number; error: unknown }>(
     { key: resourceKey, failures: 0, nextAttemptAt: 0, error: null },
@@ -433,6 +449,13 @@ export default function Logs({ apiBase }: { apiBase: string }) {
   const selectTab = selectLogsTab;
 
   const loadLogs = useCallback(async (signal: AbortSignal): Promise<LogEntry[]> => {
+    const clock = filterClockRef.current;
+    if (signal.aborted || !clock.active || clock.key !== resourceKey) {
+      throw signal.reason ?? new DOMException("Obsolete log request", "AbortError");
+    }
+    const request = ++clock.request;
+    const isCurrent = () => !signal.aborted && clock.active
+      && filterClockRef.current === clock && clock.request === request;
     let retry = logRetryRef.current;
     if (retry.key !== resourceKey) {
       retry = { key: resourceKey, failures: 0, nextAttemptAt: 0, error: null };
@@ -442,14 +465,21 @@ export default function Logs({ apiBase }: { apiBase: string }) {
     try {
       const res = await fetch(`${apiBase}/api/logs?limit=2000`, { signal });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
-      const body = await res.json() as LogEntry[] | { logs?: LogEntry[] };
+      const body = await res.json() as LogEntry[] | { logs?: LogEntry[]; generatedAt?: unknown };
+      const receivedAt = performance.now();
       const raw = Array.isArray(body) ? body : (body.logs ?? []);
       const next = raw.map(sanitizeLogEntryRouteDecision);
+      // The resource-store generation guard runs only after this loader returns.
+      // Guard these local side effects here as fetch/body readers may ignore abort.
+      if (!isCurrent()) throw signal.reason ?? new DOMException("Obsolete log request", "AbortError");
+      const sample = logsClockAnchor(Array.isArray(body) ? undefined : body.generatedAt, receivedAt);
+      if (sample) clock.anchor = sample;
+      setFilterClockNow(logsClockNow(clock.anchor, receivedAt, Date.now()));
       logRetryRef.current = { key: resourceKey, failures: 0, nextAttemptAt: 0, error: null };
       writeSessionListCache(resourceKey, next);
       return next;
     } catch (error) {
-      if (signal.aborted) throw error;
+      if (!isCurrent()) throw error;
       const normalized = error ?? new Error("log request failed");
       const failures = retry.failures + 1;
       const backoffMs = LOGS_POLL_INTERVAL_MS * (2 ** Math.min(
@@ -506,10 +536,10 @@ export default function Logs({ apiBase }: { apiBase: string }) {
 
   useEffect(() => {
     if (filters.timeWindow === "all" || tab !== "logs") return;
-    setFilterClockNow(Date.now());
-    const timer = window.setInterval(() => setFilterClockNow(Date.now()), LOGS_FILTER_CLOCK_INTERVAL_MS);
+    setFilterClockNow(readFilterClockNow());
+    const timer = window.setInterval(() => setFilterClockNow(readFilterClockNow()), LOGS_FILTER_CLOCK_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [filters.timeWindow, tab]);
+  }, [filters.timeWindow, tab, readFilterClockNow]);
 
   useEffect(() => {
     let cancelled = false;
