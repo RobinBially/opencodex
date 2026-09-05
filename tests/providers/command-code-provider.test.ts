@@ -846,6 +846,76 @@ describe("Command Code provider", () => {
     expect(built.headers["x-session-id"]).toBe(threadId);
   });
 
+  test("whitespace thread and replay identities fall through to the next trusted identity at the wire", async () => {
+    const replay: OcxParsedRequest = {
+      ...parsed(),
+      _clientThreadId: " \t\n ",
+      _reasoningReplayScope: { clientThreadId: "  replay-after-blank-thread  " },
+      _promptCacheKeyIsSharedCohort: false,
+      options: { ...parsed().options, promptCacheKey: "distinct-cache-fallback" },
+    };
+    const cache: OcxParsedRequest = {
+      ...replay,
+      _reasoningReplayScope: { clientThreadId: " \t\n " },
+      options: { ...parsed().options, promptCacheKey: "  cache-after-blank-replay  " },
+    };
+    const cleanReplay: OcxParsedRequest = {
+      ...parsed(),
+      _reasoningReplayScope: { clientThreadId: "replay-after-blank-thread" },
+    };
+    const cleanCache: OcxParsedRequest = {
+      ...parsed(),
+      _promptCacheKeyIsSharedCohort: false,
+      options: { ...parsed().options, promptCacheKey: "cache-after-blank-replay" },
+    };
+    const cases: Array<[OcxParsedRequest, OcxParsedRequest]> = [[replay, cleanReplay], [cache, cleanCache]];
+    for (const [withWhitespace, clean] of cases) {
+      const built = await builtRequest(withWhitespace);
+      const expected = await builtRequest(clean);
+      expect(built.headers["x-session-id"]).toBe(expected.headers["x-session-id"]);
+      expect(commandCodeSessionId(withWhitespace)).toBe(built.headers["x-session-id"]);
+    }
+  });
+
+  test("whitespace-only trusted identities produce fresh session headers", async () => {
+    const blank: OcxParsedRequest = {
+      ...parsed(),
+      _clientThreadId: " \t ",
+      _reasoningReplayScope: { clientThreadId: "\n " },
+      _promptCacheKeyIsSharedCohort: false,
+      options: { ...parsed().options, promptCacheKey: " \t\n " },
+    };
+    const first = (await builtRequest(blank)).headers["x-session-id"];
+    const second = (await builtRequest(blank)).headers["x-session-id"];
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    expect(first).toMatch(uuid);
+    expect(second).toMatch(uuid);
+    expect(first).not.toBe(second);
+  });
+
+  test("the same literal in thread, replay and cache namespaces yields distinct stable session headers", async () => {
+    const literal = "same-identity-in-every-kind";
+    const requests: OcxParsedRequest[] = [
+      { ...parsed(), _clientThreadId: literal },
+      { ...parsed(), _reasoningReplayScope: { clientThreadId: literal } },
+      {
+        ...parsed(),
+        _promptCacheKeyIsSharedCohort: false,
+        options: { ...parsed().options, promptCacheKey: literal },
+      },
+    ];
+    const ids: string[] = [];
+    for (const request of requests) {
+      const id = (await builtRequest(request)).headers["x-session-id"]!;
+      expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/i);
+      expect(id).not.toContain(literal);
+      expect((await builtRequest(request)).headers["x-session-id"]).toBe(id);
+      expect(commandCodeSessionId(request)).toBe(id);
+      ids.push(id);
+    }
+    expect(new Set(ids).size).toBe(3);
+  });
+
   test("does not derive affinity from a shared cohort or prompt text", () => {
     const shared = {
       ...parsed(),

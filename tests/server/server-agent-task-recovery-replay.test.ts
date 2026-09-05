@@ -63,6 +63,85 @@ function encryptedMessage(): unknown[] {
   return JSON.parse(JSON.stringify(encryptedInput()).replace("Message Type: NEW_TASK", "Message Type: MESSAGE"));
 }
 
+test.each([true, false, undefined])("fresh recovery and cache-only reparse preserve cohort marker %s and replay metadata", async (cohort) => {
+  const { post, providerResponse } = await import("../helpers/agent-task-recovery");
+  const parentThread = `affinity-parent-${crypto.randomUUID()}`;
+  const headers = codexHeaders("acct-caller", {
+    "x-codex-parent-thread-id": parentThread,
+    "thread-id": "distinct-child-thread",
+    session_id: "distinct-session",
+  });
+  const config = routedConfig({ enabled: true });
+  let recoveries = 0;
+  const recoveryBodies: string[] = [];
+  const providerBodies: string[] = [];
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    const body = String(init?.body);
+    if (String(url).includes("chatgpt.com")) {
+      recoveries++;
+      recoveryBodies.push(body);
+      return new Response(recoverySse("Read the affinity assignment."));
+    }
+    providerBodies.push(body);
+    return providerResponse();
+  }) as typeof fetch;
+
+  const observations: Array<{
+    cohort: boolean | undefined;
+    thread: string | undefined;
+    replay: OcxParsedRequest["_reasoningReplayScope"];
+    raw: string;
+  }> = [];
+  const createChat = ADAPTER_REGISTRY["openai-chat"].create;
+  const factory = spyOn(ADAPTER_REGISTRY["openai-chat"], "create").mockImplementation((provider, context) => {
+    const adapter = createChat(provider, context);
+    return {
+      ...adapter,
+      buildRequest(...[parsed, incoming]: Parameters<typeof adapter.buildRequest>) {
+        observations.push({
+          cohort: parsed._promptCacheKeyIsSharedCohort,
+          thread: parsed._clientThreadId,
+          replay: structuredClone(parsed._reasoningReplayScope),
+          raw: JSON.stringify(parsed._rawBody),
+        });
+        return adapter.buildRequest(parsed, incoming);
+      },
+    };
+  });
+  try {
+    const turns = [
+      encryptedInput(),
+      [...encryptedInput(), { type: "message", role: "user", content: "Continue the affinity assignment." }],
+    ];
+    for (const [index, input] of turns.entries()) {
+      const response = await post(config, "xai/grok-4.5", input, headers, undefined, {
+        promptCacheKeyIsSharedCohort: cohort,
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(recoveries).toBe(1);
+      expect(observations).toHaveLength(index + 1);
+      expect(providerBodies).toHaveLength(index + 1);
+      const observed = observations[index]!;
+      expect(observed.cohort).toBe(cohort);
+      expect(observed.thread).toBe(parentThread);
+      expect(observed.replay).toMatchObject({ clientThreadId: parentThread });
+      expect(observed.replay).toEqual(observations[0]!.replay);
+      for (const body of [observed.raw, providerBodies[index]!]) {
+        expect(body).toContain("Read the affinity assignment.");
+        expect(body).not.toContain(FERNET_TASK);
+        expect(body).not.toContain("promptCacheKeyIsSharedCohort");
+      }
+    }
+    expect(providerBodies[1]).toContain("Continue the affinity assignment.");
+    expect(recoveryBodies).toHaveLength(1);
+    expect(recoveryBodies[0]).toContain(FERNET_TASK);
+    expect(recoveryBodies[0]).not.toContain("promptCacheKeyIsSharedCohort");
+  } finally {
+    factory.mockRestore();
+  }
+});
+
 test("MESSAGE recovery reaches the provider and survives tool-result replay", async () => {
   const { post, providerResponse } = await import("../helpers/agent-task-recovery");
   let recoveries = 0;
