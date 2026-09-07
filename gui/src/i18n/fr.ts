@@ -301,6 +301,8 @@ export const fr: Record<TKey, string> = {
   "models.staleBanner": "Codex affiche une liste de modèles plus ancienne que ce catalogue. Redémarrez Codex pour la recharger.",
   "dash.codexAutoStart": "Démarrer opencodex avec Codex",
   "dash.codexAutoStartHint": "Permet à un mécanisme de lancement installé d’exécuter ocx ensure. Ce réglage n’installe pas de protection au redémarrage ; consultez Sécurité du démarrage pour connaître l’état effectif.",
+  "dash.codexDesktopAuthless": "Ouvrir Codex sans se connecter",
+  "dash.codexDesktopAuthlessHint": "Désactivé par défaut. Ignore la connexion Desktop séparée pour les connexions locales admissibles. Les identifiants du fournisseur restent nécessaires. Redémarrez Codex après toute modification. Certaines fonctions Desktop liées au compte peuvent être indisponibles.",
   "dash.searchModel": "Modèle auxiliaire de recherche",
   "dash.searchModelHint": "Modèle utilisé pour web_search sur les modèles routés autres qu’OpenAI. Nécessite une connexion à ChatGPT.",
   "dash.searchReasoning": "Effort de raisonnement pour la recherche",

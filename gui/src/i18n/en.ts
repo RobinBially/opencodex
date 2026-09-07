@@ -311,6 +311,8 @@ export const en = {
   "models.staleBanner": "Codex is showing an older model list than this catalog. Restart Codex to reload it.",
   "dash.codexAutoStart": "Start opencodex with Codex",
   "dash.codexAutoStartHint": "Allows an installed launcher shim to run ocx ensure. This setting does not install restart protection; check Startup safety for the effective state.",
+  "dash.codexDesktopAuthless": "Open Codex without signing in",
+  "dash.codexDesktopAuthlessHint": "Off by default. Skip the separate Desktop sign-in for eligible local connections. Upstream credentials are still required. Restart Codex after changing this setting. Account-gated Desktop features may be unavailable.",
   "dash.searchModel": "Search sidecar model",
   "dash.searchModelHint": "Model used for web_search on non-OpenAI routed models. Requires ChatGPT login.",
   "dash.searchReasoning": "Search reasoning effort",

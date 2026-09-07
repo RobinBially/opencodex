@@ -308,6 +308,8 @@ export const ru: Record<TKey, string> = {
   "models.staleBanner": "Codex показывает список моделей старее этого каталога. Перезапустите Codex, чтобы перечитать его.",
   "dash.codexAutoStart": "Запускать opencodex вместе с Codex",
   "dash.codexAutoStartHint": "Разрешает установленному launcher shim выполнять ocx ensure. Эта настройка не устанавливает защиту перезапуска; проверьте фактическое состояние в разделе безопасности запуска.",
+  "dash.codexDesktopAuthless": "Открывать Codex без входа",
+  "dash.codexDesktopAuthlessHint": "По умолчанию выключено. Пропускает отдельный вход в Desktop для допустимых локальных подключений. Учётные данные провайдера по-прежнему нужны. После изменения перезапустите Codex. Функции Desktop, связанные с аккаунтом, могут быть недоступны.",
   "dash.searchModel": "Модель сайдкара поиска",
   "dash.searchModelHint": "Модель, используемая для web_search на маршрутизируемых моделях, отличных от OpenAI. Требуется вход в аккаунт ChatGPT.",
   "dash.searchReasoning": "Уровень рассуждений для поиска",

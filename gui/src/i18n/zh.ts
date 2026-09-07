@@ -303,6 +303,8 @@ export const zh: Record<TKey, string> = {
   "models.staleBanner": "Codex 显示的模型列表比当前目录旧。重启 Codex 即可重新读取。",
   "dash.codexAutoStart": "随 Codex 启动 opencodex",
   "dash.codexAutoStartHint": "允许已安装的 launcher shim 运行 ocx ensure。此设置不会安装重启保护；请在启动安全中检查实际状态。",
+  "dash.codexDesktopAuthless": "无需登录即可打开 Codex",
+  "dash.codexDesktopAuthlessHint": "默认关闭。为符合条件的本地连接跳过单独的 Desktop 登录。仍需上游提供商凭据。更改后请重启 Codex。依赖账户的 Desktop 功能可能不可用。",
   "dash.searchModel": "搜索附属模型",
   "dash.searchModelHint": "用于非 OpenAI 路由模型的 web_search 的模型。需要 ChatGPT 登录。",
   "dash.searchReasoning": "搜索推理强度",

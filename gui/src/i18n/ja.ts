@@ -308,6 +308,8 @@ export const ja: Record<TKey, string> = {
   "models.staleBanner": "Codex はこのカタログより古いモデル一覧を表示しています。Codex を再起動すると読み直されます。",
   "dash.codexAutoStart": "Codex と一緒に opencodex を起動",
   "dash.codexAutoStartHint": "インストール済み launcher shim に ocx ensure の実行を許可します。この設定だけでは再起動保護はインストールされません。起動安全性で実際の状態を確認してください。",
+  "dash.codexDesktopAuthless": "ログインせずに Codex を開く",
+  "dash.codexDesktopAuthlessHint": "既定ではオフです。対象のローカル接続で Desktop の個別ログインを省略します。上流プロバイダーの認証情報は引き続き必要です。変更後は Codex を再起動してください。アカウントに依存する Desktop 機能が利用できない場合があります。",
   "dash.searchModel": "検索サイドカーモデル",
   "dash.searchModelHint": "非 OpenAI ルーティングモデルで web_search に使うモデル。ChatGPT ログインが必要です。",
   "dash.searchReasoning": "検索の推論負荷",

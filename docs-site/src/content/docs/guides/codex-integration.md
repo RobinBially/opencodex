@@ -215,6 +215,15 @@ HTTP/SSE.
 
 ### Authless Codex Desktop (opt-in)
 
+In **Dashboard → Overview**, **Open Codex without signing in** controls this existing
+opt-in preference. The switch defaults to **off** when the setting is absent or false;
+an existing explicit `codexDesktopAuthless: true` stays enabled. The dashboard saves
+the preference and runs a full sync. Restart Codex Desktop after changing it.
+If synchronization fails, the saved preference remains and the dashboard shows the error;
+retry **Sync** before restarting. Account-gated Desktop features may be unavailable
+when enabled. Upstream credentials, local eligibility, remote admission authentication
+and user-owned gateway settings retain their existing requirements.
+
 Codex Desktop shows its ChatGPT login screen whenever the active provider requires OpenAI auth. If
 your OpenCodex setup never uses ChatGPT credentials (routed providers only, or a blocked
 `chatgpt.com`), you can opt out of that gate:

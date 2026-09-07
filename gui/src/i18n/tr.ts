@@ -309,6 +309,8 @@ export const tr: Record<TKey, string> = {
   "models.staleBanner": "Codex, bu katalogdan daha eski bir model listesi gösteriyor. Yeniden okumak için Codex'i yeniden başlatın.",
   "dash.codexAutoStart": "opencodex'i Codex ile başlat",
   "dash.codexAutoStartHint": "Yüklü bir shim'in ocx ensure çalıştırmasına izin verir. Arka plan servisi veya yeniden başlatma koruması kurmaz; sistem durumu için Başlatma Güvenliği'ne bakın.",
+  "dash.codexDesktopAuthless": "Codex’i oturum açmadan başlat",
+  "dash.codexDesktopAuthlessHint": "Varsayılan olarak kapalıdır. Uygun yerel bağlantılarda ayrı Desktop oturum açma adımını atlar. Sağlayıcı kimlik bilgileri yine gereklidir. Değişiklikten sonra Codex’i yeniden başlatın. Hesaba bağlı Desktop özellikleri kullanılamayabilir.",
   "dash.searchModel": "Arama yan araç modeli",
   "dash.searchModelHint": "OpenAI dışı yönlendirilen modellerde web_search için kullanılan model. ChatGPT girişi gerektirir.",
   "dash.searchReasoning": "Arama akıl yürütme çabası",

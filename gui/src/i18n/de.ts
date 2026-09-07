@@ -299,6 +299,8 @@ export const de: Record<TKey, string> = {
   "models.staleBanner": "Codex zeigt eine ältere Modellliste als dieser Katalog. Starte Codex neu, um sie neu zu laden.",
   "dash.codexAutoStart": "opencodex mit Codex starten",
   "dash.codexAutoStartHint": "Erlaubt einem installierten Launcher-Shim, ocx ensure auszuführen. Diese Einstellung installiert keinen Neustartschutz; prüfe den effektiven Zustand unter Startsicherheit.",
+  "dash.codexDesktopAuthless": "Codex ohne Anmeldung öffnen",
+  "dash.codexDesktopAuthlessHint": "Standardmäßig aus. Überspringt die separate Desktop-Anmeldung bei geeigneten lokalen Verbindungen. Zugangsdaten für den Anbieter bleiben erforderlich. Codex nach einer Änderung neu starten. Kontogebundene Desktop-Funktionen können fehlen.",
   "dash.searchModel": "Such-Sidecar-Modell",
   "dash.searchModelHint": "Modell für web_search bei nicht über OpenAI gerouteten Modellen. Erfordert ChatGPT-Login.",
   "dash.searchReasoning": "Such-Reasoning-Aufwand",

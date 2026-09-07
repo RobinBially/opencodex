@@ -303,6 +303,8 @@ export const ko: Record<TKey, string> = {
   "models.staleBanner": "Codex가 이 카탈로그보다 오래된 모델 목록을 보여주고 있습니다. Codex를 재시작하면 새로 읽습니다.",
   "dash.codexAutoStart": "Codex 실행 시 opencodex 시작",
   "dash.codexAutoStartHint": "설치된 launcher shim이 ocx ensure를 실행하도록 허용합니다. 이 설정은 재부팅 보호를 설치하지 않으므로 시작 안전성에서 실제 상태를 확인하세요.",
+  "dash.codexDesktopAuthless": "로그인 없이 Codex 열기",
+  "dash.codexDesktopAuthlessHint": "기본값은 꺼짐입니다. 지원되는 로컬 연결에서 별도의 Desktop 로그인을 건너뜁니다. 업스트림 인증 정보는 여전히 필요합니다. 변경 후 Codex를 다시 시작하세요. 계정에 연결된 Desktop 기능을 사용하지 못할 수 있습니다.",
   "dash.searchModel": "서치 사이드카 모델",
   "dash.searchModelHint": "비-OpenAI 라우팅 모델의 web_search에 사용되는 모델입니다. ChatGPT 로그인 필요.",
   "dash.searchReasoning": "서치 추론 강도",
