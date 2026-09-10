@@ -895,3 +895,50 @@ test("Claude Desktop PUT retains but cannot move an unavailable route", async ()
     await server.stop(true);
   }
 });
+
+test("Claude Desktop PUT allows deleting an unavailable route, but rejects adding one", async () => {
+  const seeded = loadConfig();
+  seeded.claudeCode = {
+    desktopProfile: {
+      version: 1,
+      assignments: {
+        "missing/old-model": { family: "opus", alias: "claude-opus-4-8-20260101" },
+      },
+      defaults: { opus: "missing/old-model", fable: null, sonnet: null, haiku: null },
+    },
+  };
+  saveConfig(seeded);
+ const server = startServer(0);
+ try {
+   const state = await fetch(new URL("/api/claude-desktop", server.url)).then(r => r.json()) as Record<string, any>;
+    expect(state.models.find((model: { route: string }) => model.route === "missing/old-model")?.available).toBe(false);
+
+   const deleteEdit = structuredClone(state.profile);
+   delete deleteEdit.assignments["missing/old-model"];
+   deleteEdit.defaults.opus = Object.keys(deleteEdit.assignments).filter(route => deleteEdit.assignments[route].family === "opus").sort()[0] ?? null;
+   
+   const putDelete = await fetch(new URL("/api/claude-desktop", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+     body: JSON.stringify({ profile: deleteEdit }),
+   });
+   expect(putDelete.status).toBe(200);
+    const deleteResult = await putDelete.json() as Record<string, any>;
+    expect(deleteResult.models.some((model: { route: string }) => model.route === "missing/old-model")).toBe(false);
+    expect(deleteResult.profile.assignments["missing/old-model"]).toBeUndefined();
+    expect(loadConfig().claudeCode?.desktopProfile?.assignments["missing/old-model"]).toBeUndefined();
+   
+    const addEdit = structuredClone(deleteResult.profile);
+    addEdit.assignments["missing/new-model"] = { family: "fable", alias: "claude-opus-4-8-20260102" };
+    addEdit.defaults.fable = "missing/new-model";
+  const putAdd = await fetch(new URL("/api/claude-desktop", server.url), {
+     method: "PUT",
+     headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ profile: addEdit }),
+  });
+  expect(putAdd.status).toBe(400);
+    expect((await putAdd.json() as { error: string }).error).toContain("현재 사용할 수 없는 모델은 추가할 수 없습니다: missing/new-model");
+} finally {
+   await server.stop(true);
+ }
+});
