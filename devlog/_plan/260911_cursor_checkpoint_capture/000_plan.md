@@ -107,6 +107,11 @@ wp2; if wp3 finishes first its outcome folds into wp4 as an additional branch.
 wp2b and wp5 were appended during wp1's audit (LOOP-UNIT-CHAIN-01). Both are
 conditional: neither runs unless its predecessor returns the outcome that needs it.
 
+Outcomes: **wp2b closed as delivered-elsewhere** — the experiment returned a self-proving
+positive so a NEVER verdict was never needed, and the `graceMs` field it existed to add
+shipped in #4281 (`live-transport.ts:1064-1069`). **wp5 is live**, because branch A landed
+and the native gate now depends on a coverage question rather than a capture one.
+
 ## What the wp1 audit changed
 
 The first draft of this roadmap was audited and failed on two high findings, both
