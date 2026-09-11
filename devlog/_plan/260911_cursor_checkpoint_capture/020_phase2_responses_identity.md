@@ -63,9 +63,21 @@ checkpoint turn 1 committed, which is exactly the behaviour `#4245` says is miss
 
 ### What this removes from the issue
 
-C2 is an artifact of `/v1/chat/completions`, which carries no Responses state and
-derives a fresh conversation per request. It is not a defect on the path Codex takes,
-and it is not the reporter's problem. **This half of `#4245` is closed without a patch.**
+C2 does not affect a `/v1/responses` conversation that threads
+`previous_response_id`, which is what a Codex session does. That is the shape the
+reporter was running.
+
+**Scoped precisely, folded from the wp3 audit (near-pass residual):** the earlier
+wording claimed C2 closes for all `/v1/responses` users. It does not. A Responses
+request with **no** `previous_response_id` drops `_cursorConversationId`
+(`src/server/responses/core.ts:533`) and mints a fresh one
+(`src/adapters/cursor/request-builder.ts:361`) unless a thread owner exists, so that
+call is in the same position as chat-completions. `store: false` *with*
+`previous_response_id` is not a hole (`core.ts:461`, `core.ts:6619`).
+
+So: **closed without a patch for threaded conversations**, which is the reported
+scenario; an unthreaded one-shot Responses call still starts fresh, and that is
+expected rather than defective — there is no prior conversation to resume.
 
 That also sharpens what is left. The reporter sees `cached_tokens: 0` and full replay;
 plain multi-turn conversation on `/v1/responses` demonstrably does not do that. So the
