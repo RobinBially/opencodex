@@ -1,4 +1,4 @@
-# ADR-0082 — Windows service wrapper and incomplete updates
+# ADR-0082 — decision recorded under "Windows service wrapper and incomplete updates"
 
 - Contract owner: [ops/docs-and-release.md](../ops/docs-and-release.md#windows-service-wrapper-and-incomplete-updates)
 

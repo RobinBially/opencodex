@@ -1,4 +1,4 @@
-# ADR-0091 — Ownership Axes
+# ADR-0091 — decision recorded under "Ownership Axes"
 
 - Contract owner: [clients/integrations.md](../clients/integrations.md#ownership-axes)
 

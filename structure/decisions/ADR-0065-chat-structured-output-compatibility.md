@@ -1,4 +1,4 @@
-# ADR-0065 — Chat structured-output compatibility
+# ADR-0065 — decision recorded under "Chat structured-output compatibility"
 
 - Contract owner: [providers/chat-compat.md](../providers/chat-compat.md#chat-structured-output-compatibility)
 

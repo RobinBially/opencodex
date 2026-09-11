@@ -1,4 +1,4 @@
-# ADR-0081 — Container deployment recipe
+# ADR-0081 — decision recorded under "Container deployment recipe"
 
 - Contract owner: [ops/docs-and-release.md](../ops/docs-and-release.md#container-deployment-recipe)
 

@@ -1,4 +1,4 @@
-# ADR-0059 — xAI Grok hardening (official Grok Build contract parity)
+# ADR-0059 — decision recorded under "xAI Grok hardening (official Grok Build contract parity)"
 
 - Contract owner: [providers/xai-grok.md](../providers/xai-grok.md#xai-grok-hardening-official-grok-build-contract-parity)
 

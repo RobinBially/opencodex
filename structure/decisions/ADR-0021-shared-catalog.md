@@ -1,4 +1,4 @@
-# ADR-0021 — Shared catalog
+# ADR-0021 — decision recorded under "Shared catalog"
 
 - Contract owner: [catalog.md](../catalog.md#shared-catalog)
 

@@ -1,4 +1,4 @@
-# ADR-0053 — Cursor active-context usage
+# ADR-0053 — decision recorded under "Cursor active-context usage"
 
 - Contract owner: [providers/cursor.md](../providers/cursor.md#cursor-active-context-usage)
 

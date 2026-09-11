@@ -1,4 +1,4 @@
-# ADR-0061 — Kiro Responses text controls
+# ADR-0061 — decision recorded under "Kiro Responses text controls"
 
 - Contract owner: [providers/kiro.md](../providers/kiro.md#kiro-responses-text-controls)
 

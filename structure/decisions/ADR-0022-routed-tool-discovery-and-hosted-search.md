@@ -1,4 +1,4 @@
-# ADR-0022 — Routed tool discovery and hosted search
+# ADR-0022 — decision recorded under "Routed tool discovery and hosted search"
 
 - Contract owner: [catalog.md](../catalog.md#routed-tool-discovery-and-hosted-search)
 

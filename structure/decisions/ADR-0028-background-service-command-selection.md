@@ -1,4 +1,4 @@
-# ADR-0028 — Background service command selection
+# ADR-0028 — decision recorded under "Background service command selection"
 
 - Contract owner: [ops/service-and-sidecars.md](../ops/service-and-sidecars.md#background-service-command-selection)
 

@@ -1,4 +1,4 @@
-# ADR-0054 — Cursor conversation checkpoint reuse
+# ADR-0054 — decision recorded under "Cursor conversation checkpoint reuse"
 
 - Contract owner: [providers/cursor.md](../providers/cursor.md#cursor-conversation-checkpoint-reuse)
 

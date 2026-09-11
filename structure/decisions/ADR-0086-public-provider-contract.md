@@ -1,4 +1,4 @@
-# ADR-0086 — Public provider contract
+# ADR-0086 — decision recorded under "Public provider contract"
 
 - Contract owner: [providers/openai-tiers.md](../providers/openai-tiers.md#public-provider-contract)
 

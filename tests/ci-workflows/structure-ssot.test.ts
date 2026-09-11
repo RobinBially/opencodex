@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { renderIndex, runStructureChecks, type Manifest } from "../../scripts/structure-ssot";
+import { loadManifest, renderIndex, runStructureChecks, type Manifest } from "../../scripts/structure-ssot";
 import { repoRoot } from "../helpers/repo-root";
 
 /**
@@ -67,6 +67,8 @@ function scaffold(): string {
       "- **INV-A-01** — alpha keeps working.",
       "  Enforced by " + BT + "tests/alpha/alpha.test.ts" + BT + ".",
       "",
+      "Alpha lives in " + BT + "src/alpha/keep.ts" + BT + ".",
+      "",
       "> Decision record: [ADR-0001](decisions/ADR-0001-alpha.md)",
       "",
     ].join("\n"),
@@ -83,6 +85,22 @@ function scaffold(): string {
 const fires = (root: string, needle: string): void => {
   expect(runStructureChecks(root).join("\n")).toContain(needle);
 };
+
+/**
+ * The negative cases above run in a plain temp directory, where git has no index and the gate falls
+ * back to the filesystem. That leaves the index branch — the one the module argues hardest for —
+ * untested, so these cases build a real repository and drive it.
+ */
+function gitScaffold(): string {
+  const root = scaffold();
+  expect(Bun.spawnSync(["git", "init", "-q"], { cwd: root }).exitCode).toBe(0);
+  stage(root);
+  return root;
+}
+
+function stage(root: string): void {
+  expect(Bun.spawnSync(["git", "add", "-A"], { cwd: root }).exitCode).toBe(0);
+}
 
 describe("structure/ SSOT", () => {
   test("the maintainer docs still describe this tree", () => {
@@ -269,6 +287,59 @@ describe("structure/ SSOT", () => {
     fires(root, "claims src/imaginary/, which this tree does not have");
   });
 
+  test("a described area the doc never names", () => {
+    const root = scaffold();
+    write(root, "src/beta/new.ts", "export const beta = 1;\n");
+    const manifest = manifestOf(root);
+    manifest.docs[0]!.documents.push("src/beta/");
+    saveManifest(root, manifest);
+    fires(root, "claims src/beta/ but never names it or a path in it");
+  });
+
+  test("a fragment-only link that names no heading in its own document", () => {
+    const root = scaffold();
+    const body = readFileSync(join(root, "structure/overview.md"), "utf8");
+    write(root, "structure/overview.md", body + "\nSee [that rule](#no-such-heading).\n");
+    fires(root, "links #no-such-heading, but that heading anchor does not exist");
+  });
+
+  test("overview.md missing fails instead of silencing every invariant check", () => {
+    const root = scaffold();
+    const manifest = manifestOf(root);
+    manifest.docs = [];
+    saveManifest(root, manifest);
+    rmSync(join(root, "structure/overview.md"));
+    fires(root, "structure/overview.md is missing");
+  });
+
+  test("a record named in prose but not linked is not owned", () => {
+    const root = scaffold();
+    const body = readFileSync(join(root, "structure/overview.md"), "utf8").replace(
+      "> Decision record: [ADR-0001](decisions/ADR-0001-alpha.md)",
+      "The reasoning sits in decisions/ADR-0001-alpha.md for anyone curious.",
+    );
+    write(root, "structure/overview.md", body);
+    fires(root, "ADR-0001-alpha.md is not linked from any doc");
+  });
+
+  test("a bare filename is not treated as a repository path", () => {
+    const root = scaffold();
+    const body = readFileSync(join(root, "structure/overview.md"), "utf8");
+    write(root, "structure/overview.md", body + "\nCodex reads " + BT + "models_cache.json" + BT + " at startup.\n");
+    expect(runStructureChecks(root)).toEqual([]);
+  });
+
+  test("a malformed manifest is an actionable failure, not a stack trace", () => {
+    expect(loadManifest("{not json")).toHaveProperty("error");
+    const shapeless = loadManifest(JSON.stringify({ sizeBudgetLines: 600 }));
+    expect(shapeless).toHaveProperty("error");
+    expect((shapeless as { error: string }).error).toContain("docs must be an array");
+
+    const root = scaffold();
+    write(root, "structure/manifest.json", "{not json");
+    fires(root, "is not valid JSON");
+  });
+
   test("INDEX.md that drifted from the manifest", () => {
     const root = scaffold();
     write(root, "structure/INDEX.md", "# hand-edited\n");
@@ -278,5 +349,56 @@ describe("structure/ SSOT", () => {
   test("INDEX.md in this repository is the generated file", () => {
     const root = repoRoot();
     expect(readFileSync(join(root, "structure/INDEX.md"), "utf8").replace(/\r\n/g, "\n")).toBe(renderIndex(manifestOf(root)));
+  });
+
+  test("a tracked tree is judged by the index: a case variant is named, not silently accepted", () => {
+    const root = gitScaffold();
+    expect(runStructureChecks(root)).toEqual([]);
+    const body = readFileSync(join(root, "structure/overview.md"), "utf8").replace(
+      BT + "src/alpha/keep.ts" + BT,
+      BT + "src/Alpha/keep.ts" + BT,
+    );
+    write(root, "structure/overview.md", body);
+    stage(root);
+    fires(root, "but the tracked path is src/alpha/keep.ts");
+  });
+
+  test("a tracked tree rejects an untracked leftover that CI would never see", () => {
+    const root = gitScaffold();
+    const body = readFileSync(join(root, "structure/overview.md"), "utf8");
+    write(root, "src/alpha/scratch.ts", "export const scratch = 1;\n");
+    write(root, "structure/overview.md", body + "\nAlso " + BT + "src/alpha/scratch.ts" + BT + ".\n");
+    // overview.md is staged so the reference is read; scratch.ts deliberately is not.
+    expect(Bun.spawnSync(["git", "add", "structure/overview.md"], { cwd: root }).exitCode).toBe(0);
+    fires(root, "names src/alpha/scratch.ts, which this tree does not have");
+  });
+
+  test("a record shown inside a fenced example is not a second owner", () => {
+    const root = scaffold();
+    const manifest = manifestOf(root);
+    manifest.docs.push({ path: "second.md", tier: 1, title: "Second", scope: "s", documents: [] });
+    const fence = BT.repeat(3);
+    write(root, "structure/second.md", "# Second\n\n" + fence + "text\n> Decision record: [ADR-0001](decisions/ADR-0001-alpha.md)\n" + fence + "\n");
+    saveManifest(root, manifest);
+    expect(runStructureChecks(root)).toEqual([]);
+  });
+
+  test("a Decision record line pointing outside decisions/ is rejected", () => {
+    const root = scaffold();
+    write(root, "structure/elsewhere.md", "# Elsewhere\n");
+    const body = readFileSync(join(root, "structure/overview.md"), "utf8").replace(
+      "> Decision record: [ADR-0001](decisions/ADR-0001-alpha.md)",
+      "> Decision record: [ADR-0001](elsewhere.md)",
+    );
+    write(root, "structure/overview.md", body);
+    fires(root, "which is not in decisions/");
+  });
+
+  test("a malformed grace element is a failure line, not a thrown TypeError", () => {
+    const root = scaffold();
+    const manifest = manifestOf(root) as unknown as { absentPaths: unknown[] };
+    manifest.absentPaths = ["go/"];
+    write(root, "structure/manifest.json", JSON.stringify(manifest, null, 2) + "\n");
+    fires(root, "absentPaths[0].path must be a string");
   });
 });

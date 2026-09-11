@@ -1,4 +1,4 @@
-# ADR-0052 — Reasoning and tool-result compatibility
+# ADR-0052 — decision recorded under "Reasoning and tool-result compatibility"
 
 - Contract owner: [providers/chat-compat.md](../providers/chat-compat.md#reasoning-and-tool-result-compatibility)
 

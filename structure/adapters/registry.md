@@ -42,8 +42,3 @@ request when a node carries both. Codex's own deferred tool catalog emits exactl
 so the schema is not something a user can fix from configuration (issue #2673).
 
 > Decision record: [ADR-0093](../decisions/ADR-0093-moonshot-ref-with-siblings-normalization.md)
-
-예산은 세 가지다. 확장 횟수만으로는 참조가 하나도 없는 깊은 스키마를 막지 못해서, 깊이와
-노드 수를 따로 둔다 — `google-tool-schema.ts`가 이미 쓰는 형태다. 두 가드 모두 제거했을 때
-실제로 red가 되는지 확인했고, 예산을 풀면 20k 깊이에서 `RangeError: Maximum call stack size
-exceeded`가 난다.

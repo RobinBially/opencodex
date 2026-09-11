@@ -1,4 +1,4 @@
-# ADR-0045 — Standalone Images
+# ADR-0045 — decision recorded under "Standalone Images"
 
 - Contract owner: [data-planes/images.md](../data-planes/images.md#standalone-images)
 

@@ -1,4 +1,4 @@
-# ADR-0070 — Same-provider combo quota fallback
+# ADR-0070 — decision recorded under "Same-provider combo quota fallback"
 
 - Contract owner: [transports/responses.md](../transports/responses.md#same-provider-combo-quota-fallback)
 

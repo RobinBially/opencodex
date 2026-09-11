@@ -1,4 +1,4 @@
-# ADR-0093 — Moonshot `$ref`-with-siblings normalization
+# ADR-0093 — decision recorded under "Moonshot `$ref`-with-siblings normalization"
 
 - Contract owner: [adapters/registry.md](../adapters/registry.md#moonshot-ref-with-siblings-normalization)
 
@@ -22,3 +22,10 @@
   큰 정의를 여러 노드가 참조하면 출력이 커질 수 있고, 예산이 소진되면 해당 노드는 빈 객체나
   순수 `$ref`로 닫힌다 — 약해진 스키마를 절반만 내보내는 것보다 낫다. Moonshot 계열
   `openai-chat` baseUrl에만 적용되고 다른 provider는 손대지 않는다.
+
+## Why three budgets
+
+예산은 세 가지다. 확장 횟수만으로는 참조가 하나도 없는 깊은 스키마를 막지 못해서, 깊이와
+노드 수를 따로 둔다 — `google-tool-schema.ts`가 이미 쓰는 형태다. 두 가드 모두 제거했을 때
+실제로 red가 되는지 확인했고, 예산을 풀면 20k 깊이에서 `RangeError: Maximum call stack size
+exceeded`가 난다.

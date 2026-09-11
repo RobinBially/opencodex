@@ -1,4 +1,4 @@
-# ADR-0073 — Authentication boundaries
+# ADR-0073 — decision recorded under "Authentication boundaries"
 
 - Contract owner: [gui-and-management-api.md](../gui-and-management-api.md#authentication-boundaries)
 

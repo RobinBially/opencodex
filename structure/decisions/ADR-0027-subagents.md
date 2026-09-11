@@ -1,4 +1,4 @@
-# ADR-0027 — Subagents
+# ADR-0027 — decision recorded under "Subagents"
 
 - Contract owner: [subagents.md](../subagents.md#subagents)
 

@@ -1,4 +1,4 @@
-# ADR-0029 — Windows startup ownership listing reuse
+# ADR-0029 — decision recorded under "Windows startup ownership listing reuse"
 
 - Contract owner: [ops/service-and-sidecars.md](../ops/service-and-sidecars.md#windows-startup-ownership-listing-reuse)
 
