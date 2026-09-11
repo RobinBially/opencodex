@@ -161,6 +161,48 @@ singleton-versus-scope-keyed state, the missing invalidation rule in the absence
 of an account-side revision, the pin-versus-preference disagreement after a
 released pin, and the test gap against criterion c-2.
 
+## Implementation-entry audit, after the lane freeze lifted
+
+Lane L3 PR #4230 and lane L1 PR #4226 merged, so this work became writable. A
+fresh audit against the post-merge file returned FAIL with three more blockers.
+All anchors survived the merge (`codexPoolKeyForScope` 225,
+`resetCodexRoutingForManualSelection` 870, `pickUnboundStrategyAccount` 1446,
+`getEffectiveActiveCodexAccountId` 1625, `rememberActiveCodexAccount` 1644,
+`setActiveCodexAccount` 1660, `promoteActiveCodexAccount` 1669), but L3 added
+independent-scope cursor isolation and runtime-only preemption, which changes what
+the design may assume.
+
+1. **BLOCKER. The preference is scope-keyed but `getEffectiveActiveCodexAccountId`
+   is not.** It takes only a config and has no `quotaScope`, so it can read the
+   shared `POOL_KEY_CODEX` entry and nothing else. `resolveCodexAccountForThreadDetailed`
+   and `previewCodexAccountForRequest` look up `codexPoolKeyForScope(quotaScope)`
+   themselves. A scope with no entry means NO preference; it must never fall back to
+   the shared key, or an independent scope would consume a one-shot it was not given.
+2. **BLOCKER. Consuming inside `setActiveCodexAccount` is wrong.** That function is
+   also the persist path for pool-driven moves: quota auto-switch (1807), affinity
+   re-evaluation (2166), unbound persist (2231 and 2252) and the quota promote
+   (1671) all call it. Consuming there would let the pool spend the operator's
+   one-shot. Consume only on the path where the preference was actually honoured
+   and the dispatch succeeded, plus on an operator reset.
+3. **BLOCKER. An unconditional honour traps a cooled account.** With
+   `rememberActiveCodexAccount` a no-op, a 429 or failover on the preferred account
+   (2527, 2576, 1878) could not move `getEffectiveActiveCodexAccountId` away from
+   it. Honour the preference only while that account is selectable and not cooling;
+   otherwise treat it as absent for this dispatch without spending it.
+4. **The preview path must mirror resolve.** The check belongs immediately before
+   BOTH `pickUnboundStrategyAccount` calls, at 2020 and 2193, after affinity and
+   model-detour handling, not at function entry.
+5. **Pause and exclusion never route through the reset.** `reconcileCodexActiveAfterExclusion`
+   (1692) and the health-clear path (317-320) bypass it, so a preference would
+   outlive an excluded or paused account. Drop the key when the preferred account is
+   excluded or paused.
+6. **Minor, but decide it deliberately.** `isEffectiveCodexAccountPinned` (1637)
+   would read true while the preference equals the pin, and L3 now documents that
+   `getEffectiveActiveCodexAccountId` is what surfaces automatic picks to the API
+   and dashboard. Either keep the pin check reading persisted and runtime only, or
+   accept and document that `GET /api/codex-auth/active` is manual-sticky until the
+   preference is consumed.
+
 The generic OAuth kind gets no preference in this layer; that arrives with the
 kernel in phase 2. No management or GUI change.
 
