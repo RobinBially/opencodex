@@ -172,6 +172,42 @@ would have forced an edit inside lane L3's freeze. The second was that dropping
 which requires `pool.kernel` to default off and the old behaviour to be exactly
 restorable.
 
+## Second-half audit (the flagged behaviour change)
+
+The extraction shipped as PR #4279. A separate audit of the remaining half returned
+FAIL, and its findings change that half materially. Recorded here so the next cycle
+starts from them rather than rediscovering them.
+
+1. **BLOCKER. Branching the final ranking expression is not enough.**
+   `preferredInitialAccount` encodes the quota strategy BEFORE its tail: the
+   healthy-active early return tests `isAccountQuotaExhausted` (:262) and the
+   roster-wide `hasHeadroomEvidence` check (:272) returns null when a provider has
+   no quota data at all. Leave those untouched and round-robin can never run for a
+   provider without quota evidence, and fill-first never reaches
+   `autoSwitchThreshold` because the healthy active account already returned. Both
+   guards have to be strategy-gated: skip the evidence requirement for round-robin,
+   and use the threshold rather than exhaustion for fill-first.
+2. **BLOCKER. The preference must peek, not pick.**
+   `pickRoundRobinAccount` mutates live ring state, but
+   `preferredInitialAccount` is explicitly a discardable proposal that the caller
+   drops on a resolver throw or a missing project. Mutating there desyncs the
+   cursor against requests that never happened. Use `peekRoundRobinAccount` and
+   mutate with `pickRoundRobinAccount` plus `notePoolRotationSuccess` only after
+   the selection is admitted, which is what Anthropic already does.
+3. **The 429 path is safe to branch but fill-first must still move.** That tail has
+   no evidence guard, so a strategy branch is structurally fine. Fill-first there
+   cannot mean keep-active: the account that just returned 429 is already cooled,
+   so staying put would skip rotation entirely.
+4. **`stickyLimit` does not exist for the generic kind yet.** The
+   `oauthAccountFailover` type carries only `enabled`, `strategy` and
+   `autoSwitchThreshold`. Lifting the 400 at `oauth-account-routes.ts:395` before
+   adding the field to the type, the DTO, GET and the PUT writer would accept a
+   value and then drop it. The kernel default is 1.
+5. **The flag lands in a lane-owned file.** `OcxConfig` has no `pool` key today,
+   so `pool.kernel` belongs in `src/types/config.ts` (around :363) - which lane L3
+   owns. This half therefore inherits the same freeze as work-phases 1 and 2 until
+   that ownership clears, or the flag needs a different home.
+
 - `tests/codex-integration/codex-pool-rotation.test.ts` — unchanged behaviour
   through the re-export (`pickRoundRobinAccount` `:270`, `selectPriorityTier` `:111`)
 - `tests/oauth/generic-oauth-failover.test.ts` — a configured strategy changes the

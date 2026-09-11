@@ -69,3 +69,35 @@ passing the threshold, because a threshold rebind throws away a warm cache.
 A cache-affine account is chosen over a higher-headroom one; an exhausted affine
 account still yields; concurrent distinct sessions keep distinct accounts; a
 shared-cohort cache key does not collapse every session onto one account.
+
+## Staleness re-verification and why this phase is not open yet
+
+Re-verified at the wp3 P entry against `origin/dev` `1da8dae96`. Every anchor this
+document relies on is unchanged from the original reading:
+
+| Symbol | File | Line |
+|---|---|---|
+| `CODEX_THREAD_AFFINITY_MAX_ENTRIES` | `src/codex/routing.ts` | 135 |
+| `pruneLruThreadAffinities` | `src/codex/routing.ts` | 1212 |
+| `reevaluateAffinityQuota` | `src/codex/routing.ts` | 1942 |
+| `MAX_AFFINITY_ENTRIES` | `src/oauth/anthropic-routing.ts` | 48 |
+| `anthropicSessionKeyFromParts` | `src/oauth/anthropic-routing.ts` | 877 |
+| `promptCacheKeyIsSharedCohort` | `src/oauth/anthropic-routing.ts` | 883 |
+| `MAX_CACHE_BREAKPOINTS` | `src/adapters/anthropic.ts` | 60 |
+
+The design is therefore current. Two things still stop this phase from opening,
+and neither is a documentation gap:
+
+1. **Its three open assumptions are genuine product decisions, not research gaps.**
+   The affinity key shape, what to do when a `prompt_cache_key` looks like a shared
+   cohort, and whether to add a minimum-token cache gate all change observable
+   behaviour and none is settled by reading the code. They need a human answer.
+   Under an active goal the Interview is suppressed, so this phase cannot resolve
+   them from inside the loop.
+2. **The Codex half is frozen.** `src/codex/routing.ts` carries three of the seven
+   anchors above and is owned by lane L3 for the dispatch round in flight.
+
+The Anthropic and generic halves are not frozen, so a narrower first slice exists:
+unify the affinity key for those two kinds only, leaving the Codex thread-affinity
+map on its current key until the freeze lifts. That slice still needs assumption 1
+answered, which is why this phase stays closed rather than being re-scoped now.
