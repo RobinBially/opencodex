@@ -159,6 +159,29 @@ ceiling proves too slow in practice; do not lower it on the void 750/1000 ms dat
 3. `bun test tests/providers/cursor` green.
 4. No change to `src/router.ts`, `src/server/lifecycle.ts`, `src/server/responses/core.ts`.
 
+## Landed
+
+`src/adapters/cursor/live-transport.ts`: `CHECKPOINT_CAPTURE_GRACE_MS = 1_500`, the
+exported pure predicate `shouldExtendForCheckpointCapture`, the one-shot extension inside
+`scheduleClientToolFinalize` placed before `finalizeAfterDrain`, the early fire from the
+`conversationCheckpointUpdate` branch of `handleServerMessage`, and `graceMs` /
+`checkpointGraceExtended` added to the `client-tool-suspend` diagnostic.
+
+Tests in `tests/providers/cursor/cursor-tool-finalize-race.test.ts`, reusing that file's
+existing transport harness. Measured in the suite: the turn that never sends a checkpoint
+finalizes at 1816 ms, the turn whose checkpoint arrives finalizes at 256 ms. That gap is
+A1b doing its job — without it both would sit out the full window.
+
+Two low findings from the implementation audit were folded rather than accepted:
+`pendingFinalizeRun` is restored alongside the early-fire timer so the pair never
+diverges, and `capturedCheckpointBytes` is reset in `open()` so a reused transport cannot
+inherit a stale snapshot. Neither was reachable in production; folding them removes the
+reachability argument.
+
+**Still open:** the native wire-model gate. `capturedAfterClientTool` is an arrival proof,
+not a coverage proof, so wp5 owns decoding the captured `ConversationStateStructure`
+before that gate moves.
+
 ### What branch A is deliberately not doing
 
 The obvious companion edit — dropping `isCursorExternalWireModel` from
