@@ -1021,4 +1021,71 @@ describe("selection order across rotation strategies", () => {
     expect(pickAlternateCodexAccount(config, "a", Date.now(), "shared", selectionOptions))
       .toBe(MAIN_CODEX_ACCOUNT_ID);
   });
+
+  describe("an operator selection outranks the pool cursor", () => {
+    test("the pool moves, then a manual pick wins the next unbound dispatch", () => {
+      const config = makeThreeAccountConfig({
+        accountPoolStrategy: "round-robin",
+        accountPoolStickyLimit: 1,
+        activeCodexAccountId: "a",
+      });
+      updateAccountQuota("a", 10);
+      updateAccountQuota("b", 20);
+      updateAccountQuota("c", 30);
+
+      // Let the pool move the runtime cursor off the operator account.
+      const first = resolveCodexAccountForThread(null, config)!;
+      recordCodexUpstreamOutcome(config, first, 429);
+      const promoted = getEffectiveActiveCodexAccountId(config);
+      expect(promoted).not.toBe(first);
+
+      // The operator now selects the third account, one the pool did not choose and that
+      // carries no cooldown. Before this feature the runtime cursor kept winning and the
+      // next dispatch still served the pool account, which is the defect this phase fixes.
+      const chosen = ["a", "b", "c"].find(id => id !== first && id !== promoted)!;
+      config.activeCodexAccountId = chosen;
+      resetCodexRoutingForManualSelection(chosen);
+
+      expect(getEffectiveActiveCodexAccountId(config)).toBe(chosen);
+      expect(resolveCodexAccountForThread(null, config)).toBe(chosen);
+    });
+
+    test("a successful dispatch spends the one-shot so the pool may move again", () => {
+      const config = makeThreeAccountConfig({
+        accountPoolStrategy: "round-robin",
+        accountPoolStickyLimit: 1,
+        activeCodexAccountId: "a",
+      });
+      updateAccountQuota("a", 10);
+      updateAccountQuota("b", 20);
+      updateAccountQuota("c", 30);
+      resetCodexRoutingForManualSelection("a");
+      expect(resolveCodexAccountForThread(null, config)).toBe("a");
+
+      // Success commits the operator choice and releases the hold. Without a consume site
+      // the preference would be permanent and the automatic cursor could never move again.
+      recordCodexUpstreamOutcome(config, "a", 200);
+      recordCodexUpstreamOutcome(config, "a", 429);
+      expect(getEffectiveActiveCodexAccountId(config)).not.toBe("a");
+    });
+
+    test("a 429 on the preferred account still promotes away from it", () => {
+      const config = makeThreeAccountConfig({
+        accountPoolStrategy: "round-robin",
+        accountPoolStickyLimit: 1,
+        activeCodexAccountId: "a",
+      });
+      updateAccountQuota("a", 10);
+      updateAccountQuota("b", 20);
+      updateAccountQuota("c", 30);
+      resetCodexRoutingForManualSelection("a");
+
+      // The failover promote is exempt from the preference guard on purpose: it only runs
+      // because the account in use just failed, so it is never an automatic pick competing
+      // with the operator. Guarding it would trap routing on a cooled account.
+      recordCodexUpstreamOutcome(config, "a", 429);
+      expect(isCodexAccountInCooldown("a")).toBe(true);
+      expect(getEffectiveActiveCodexAccountId(config)).not.toBe("a");
+    });
+  });
 });
