@@ -580,6 +580,10 @@ const modelPinnedEffortsSchema = z.unknown().superRefine((value, ctx) => {
 const providerConfigSchema = z.object({
   pinnedReasoningEffort: pinnedReasoningEffortSchema.optional(),
   modelPinnedReasoningEfforts: modelPinnedEffortsSchema.optional(),
+  // Validated rather than left to passthrough: an unrecognized strategy would otherwise
+  // load silently and then be ignored at selection time, which reads as a broken feature
+  // rather than a rejected setting.
+  apiKeyPoolStrategy: z.enum(["round-robin", "fill-first"]).optional(),
   adapter: z.string().min(1),
   baseUrl: z.string().min(1),
   alias: z.string().optional(),
