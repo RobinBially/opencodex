@@ -79,6 +79,42 @@ describe("provider registry parity", () => {
       "qwen3.7-max",
     ]);
     expect(KEY_LOGIN_PROVIDERS["opencode-go"].noVisionModels).not.toContain("kimi-k2.7-code");
+    // #1338 / #1415: the Zen gateway rejects json_schema on its DeepSeek routes. The three
+    // presets that share that gateway carry the narrow opt-out as a registry-only seed, so
+    // an operator no longer has to disable structured output by hand. Registry-only means
+    // it is asserted here against the raw entry, not the derived key-login map.
+    const zenDeepseekJsonSchema: Record<string, string[]> = {
+      "opencode-go": ["deepseek-v4-pro", "deepseek-v4-flash"],
+      "opencode-zen": ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-free"],
+      "opencode-free": ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-free"],
+    };
+    for (const [id, expected] of Object.entries(zenDeepseekJsonSchema)) {
+      expect(PROVIDER_REGISTRY.find(entry => entry.id === id)?.noJsonSchemaModels).toEqual(expected);
+    }
+    // A model can only be gated onto the thinking-budget or thinking-toggle wire if the same
+    // preset also gives it an effort ladder — otherwise the adapter translates effort into a
+    // wire field for a model whose picker is empty. opencode-go carried the shared budget list
+    // while seeding only its own four ladders, so a live roster serving qwen3.5-397b armed the
+    // budget path with nothing to advertise.
+    for (const id of ["opencode-go", "opencode-zen", "opencode-free"]) {
+      const entry = PROVIDER_REGISTRY.find(candidate => candidate.id === id);
+      const ladders = Object.keys(entry?.modelReasoningEfforts ?? {});
+      const gated = [...entry?.thinkingBudgetModels ?? [], ...entry?.thinkingToggleModels ?? []];
+      expect({ id, ungated: gated.filter(model => !ladders.includes(model)) })
+        .toEqual({ id, ungated: [] });
+    }
+    // Issue #78 / #950: a DeepSeek route that advertises a thinking ladder must also replay
+    // reasoning_content on tool-call continuations, or the gateway answers 400 on the second
+    // turn. The three Zen presets seed those two tables by hand, so this pins the pairing
+    // instead of trusting that whoever adds the next route remembers both.
+    for (const id of ["opencode-go", "opencode-zen", "opencode-free"]) {
+      const entry = PROVIDER_REGISTRY.find(candidate => candidate.id === id);
+      const replayed = entry?.preserveReasoningContentModels ?? [];
+      const thinkingDeepseek = Object.keys(entry?.modelReasoningEfforts ?? {})
+        .filter(model => model.startsWith("deepseek-"));
+      expect({ id, unreplayed: thinkingDeepseek.filter(model => !replayed.includes(model)) })
+        .toEqual({ id, unreplayed: [] });
+    }
     expect(KEY_LOGIN_PROVIDERS.mimo.noVisionModels).toEqual(["mimo-v2.5-pro"]);
     expect(KEY_LOGIN_PROVIDERS.mimo.noVisionModels).not.toContain("mimo-v2.5");
     expect(KEY_LOGIN_PROVIDERS["opencode-go"]).toMatchObject({
