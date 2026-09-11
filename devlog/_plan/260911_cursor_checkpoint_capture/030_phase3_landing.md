@@ -78,6 +78,87 @@ cancels. A sibling tool call reopening `openToolCalls` during the window is hand
 the `size === 0` guard, which also stops the one extension from being spent on a turn
 that was not actually drained.
 
+### A1b — fire early when the frame lands (required, not optional)
+
+A1 alone makes every suspended tool turn pay the full extension, including the turns
+that were never going to send a checkpoint. Measured arrival is well inside the window,
+so waiting out the remainder is pure added latency on the tool path.
+
+Make the timer body reusable and let the capture site run it immediately:
+
+```diff
+   private pendingFinalize?: ReturnType<typeof setTimeout>;
++  private pendingFinalizeRun?: () => void;
++  private checkpointGraceExtended = false;
++  private wantsCheckpointCapture = false;
+```
+
+`scheduleClientToolFinalize` stores the callback instead of inlining it:
+
+```diff
+     this.clearPendingFinalize();
+-    this.pendingFinalize = setTimeout(() => {
++    const run = (): void => {
+       ... body from A1 ...
+-    }, graceMsOverride ?? this.activeClientToolFinalizeGraceMs);
++    };
++    this.pendingFinalizeRun = run;
++    this.pendingFinalize = setTimeout(run, graceMsOverride ?? this.activeClientToolFinalizeGraceMs);
+```
+
+and `handleServerMessage`, right after `capturedCheckpointBytes` is set:
+
+```diff
+     if (message.message.case === "conversationCheckpointUpdate") {
+       try {
+         this.capturedCheckpointBytes = toBinary(ConversationStateStructureSchema, message.message.value);
+       } catch {
+         this.capturedCheckpointBytes = undefined;
+       }
++      // We are only still open because the grace was extended waiting for exactly this
++      // frame. Stop waiting. Deferred by one tick so this frame finishes being mapped
++      // and pushed before the terminal events go out — firing inline would reorder them.
++      if (this.checkpointGraceExtended && this.pendingFinalizeRun && this.capturedCheckpointBytes) {
++        const run = this.pendingFinalizeRun;
++        this.clearPendingFinalize();
++        this.pendingFinalizeRun = undefined;
++        this.pendingFinalize = setTimeout(run, 0);
++      }
+     }
+```
+
+Net effect: a turn whose checkpoint arrives pays roughly the real arrival latency; a turn
+whose checkpoint never arrives pays `CHECKPOINT_CAPTURE_GRACE_MS` once and then dies at a
+known deadline, as before.
+
+### Sizing `CHECKPOINT_CAPTURE_GRACE_MS`
+
+Measured on macbookpro-2 against a live account, 12 tools held constant on the wire:
+
+| Local grace | Post-`toolCallStarted` checkpoint | `capturedBytes` |
+|---|---|---|
+| 50 ms | no | 0 |
+| 1500 ms | yes | 3036 |
+
+750 ms and 1000 ms arms were attempted but their results are void — they were collected
+through the line-count windowing that `012` shows returns empty once the 500-line log
+ring fills. They are not evidence and are not used here.
+
+**Choose 1500 ms**, the only window with a clean positive. With A1b the cost is paid only
+when no checkpoint comes. Revisit with a bracketed rerun using tail-based reading if that
+ceiling proves too slow in practice; do not lower it on the void 750/1000 ms data.
+
+### Acceptance criteria for this work-phase
+
+1. `bun run typecheck` clean.
+2. A focused test proves: checkpoint after `tool_call_end` but past the base grace is
+   captured and committed for an external wire model with `checkpointUsable: false`;
+   a transport that never sends one still refuses and still cancels;
+   a native wire model still refuses (the gate is untouched);
+   the extension happens at most once.
+3. `bun test tests/providers/cursor` green.
+4. No change to `src/router.ts`, `src/server/lifecycle.ts`, `src/server/responses/core.ts`.
+
 ### What branch A is deliberately not doing
 
 The obvious companion edit — dropping `isCursorExternalWireModel` from
