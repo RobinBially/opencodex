@@ -208,11 +208,11 @@ export function codexWsExchange(options: ExchangeOptions): Promise<Response> {
     };
     /** Ping on a fixed interval until the response starts; a socket without ping() is never pinged. */
     const schedulePing = () => {
-      const socket = ws as WebSocket & { ping?: (data?: string) => void };
-      if (typeof socket.ping !== "function" || responseCommitted || terminal) return;
+      const ping = (ws as WebSocket & { ping?: (data?: string) => void }).ping;
+      if (typeof ping !== "function" || responseCommitted || terminal) return;
       pingTimer = setTimeout(() => {
         if (responseCommitted || terminal) return;
-        try { socket.ping(); } catch { return; }
+        try { ping.call(ws); } catch { return; }
         pings += 1;
         // ping() may close the socket synchronously and settle the exchange; re-check.
         if (!terminal) schedulePing();
