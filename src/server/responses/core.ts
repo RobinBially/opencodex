@@ -210,6 +210,7 @@ import {
   applyUpstreamRecoveryInit,
   fetchWithResetRetry,
   fetchWithTransientRetry,
+  isNonReplayableResponse,
   prepareSameTarget429Wait,
 } from "../../lib/upstream-retry";
 import {
@@ -830,7 +831,8 @@ async function opaqueBlobRejectionBodyForRecovery(
   signal: AbortSignal,
 ): Promise<string | undefined> {
   if (
-    response.status < 400
+    isNonReplayableResponse(response)
+    || response.status < 400
     || (response.status >= 500 && response.status !== 502)
     || adapterName !== "openai-responses"
     || alreadyAttempted
@@ -1124,6 +1126,9 @@ export async function shouldRetryCodexPoolAccountQuota(
   response: Response,
   signal?: AbortSignal,
 ): Promise<boolean> {
+  // A post-send WebSocket gateway status must not become a second account's send; the
+  // body carries no quota evidence either, but the marker is the contract, not the prose.
+  if (isNonReplayableResponse(response)) return false;
   if (response.status === 402 || response.status === 429) return true;
   if (response.status < 500 || response.status >= 600) return false;
   try {
