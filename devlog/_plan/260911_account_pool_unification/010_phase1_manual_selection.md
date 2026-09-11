@@ -203,6 +203,36 @@ the design may assume.
    accept and document that `GET /api/codex-auth/active` is manual-sticky until the
    preference is consumed.
 
+## Measured: the consume call site is the whole design, not a detail
+
+A first implementation pass built the preference map, the seeding inside
+`resetCodexRoutingForManualSelection`, the `rememberActiveCodexAccount` guard, the
+`getEffectiveActiveCodexAccountId` overlay and the exclusion revoke, and left the
+consume call site unwired. It typechecked, and then
+`tests/codex-integration/codex-pool-rotation.test.ts` went from green to **15 failures
+out of 69**, including "fill-first picks the same sequence with no stored order as
+before the feature".
+
+That is the correct result, and it is worth recording rather than repeating. Without a
+consume site the one-shot is permanent: the first operator selection freezes the
+automatic cursor forever, because `rememberActiveCodexAccount` stays a no-op and no
+code path ever clears the entry. Every rotation-strategy test that expects the pool to
+keep moving after a manual selection fails, and they are right to.
+
+So the implementation order matters. Build the consume path FIRST, not last:
+
+1. Find the point that already records a successful upstream outcome for the resolved
+   account and call `consumeCodexManualPreference(poolKey)` there, for a non-quota
+   success only. This is the Codex analogue of `commitAnthropicSelectionRouting`
+   (`anthropic-routing.ts` :799-800), which Codex has no direct equivalent of.
+2. Only then add the `rememberActiveCodexAccount` guard, so the suite never passes
+   through a state where the cursor can freeze.
+3. Gate honouring on the account being selectable, per blocker 3 above, so a cooled
+   preferred account is skipped for that dispatch without being spent.
+
+The pass was reverted rather than pushed. The branch `codex/manual-selection-wins`
+carries this document and no source change.
+
 The generic OAuth kind gets no preference in this layer; that arrives with the
 kernel in phase 2. No management or GUI change.
 
