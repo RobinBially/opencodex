@@ -50,9 +50,9 @@ MODIFY `src/codex/routing.ts`
    `manualPreference` from `config.activeCodexAccountId`, mirroring
    `anthropic-routing.ts:810`. It keeps clearing thread affinity, clearing the
    runtime cursor and seeding round-robin, and keeps preserving cooldown.
-3. `pickUnboundStrategyAccount` (`:1466-1481`) returns early while a preference is
-   live, so round-robin and fill-first cannot call `rememberActiveCodexAccount`
-   over the operator choice.
+3. `pickUnboundStrategyAccount` (declared `:1446`, commit sites `:1470` and
+   `:1481`) returns early while a preference is live, so round-robin and
+   fill-first cannot call `rememberActiveCodexAccount` over the operator choice.
 4. `getEffectiveActiveCodexAccountId` (`:1625`) returns the preference account
    while one is live, ahead of the runtime cursor.
 5. `resolveCodexAccountForThreadDetailed` (`:2069`) checks the preference before
@@ -98,3 +98,23 @@ Semantic oracle: `tests/adapters/anthropic/anthropic-account-pool.test.ts` `:144
 
 The generic OAuth kind gets no preference in this layer; that arrives with the
 kernel in phase 2. No management or GUI change.
+
+## Staleness re-verification
+
+Re-verified at the wp1 P entry against `origin/dev` `16f18d654`, after lane L3
+landed `de1d88739`, `abec9ee51` and `7f91737c2` on the owned files. Every anchor
+this document depends on is unchanged from the `dd9a2906b` reading:
+
+| Symbol | Line on 16f18d654 |
+|---|---|
+| `getEffectiveActiveCodexAccountId` | 1625 |
+| `rememberActiveCodexAccount` | 1644 |
+| `applyQuotaAutoSwitch` | 1784 |
+| `resetCodexRoutingForManualSelection` | 870 |
+| `pickUnboundStrategyAccount` | 1446 |
+| `releaseDrainedCodexAccountPin` | 1757 |
+
+The design therefore survives the lane's landings. What does not change is the
+coordination risk: L3 still owns these files for the dispatch round, so the B
+phase of this work-phase must not open until that ownership clears. Re-run this
+table at that point, because the guarantee above is a snapshot of `16f18d654`.
