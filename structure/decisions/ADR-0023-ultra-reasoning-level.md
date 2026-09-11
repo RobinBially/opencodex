@@ -1,4 +1,4 @@
-# ADR-0023 — Ultra reasoning level
+# ADR-0023 — decision recorded under "Ultra reasoning level"
 
 - Contract owner: [catalog.md](../catalog.md#ultra-reasoning-level)
 

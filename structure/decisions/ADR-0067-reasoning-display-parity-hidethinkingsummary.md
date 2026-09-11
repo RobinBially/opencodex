@@ -1,4 +1,4 @@
-# ADR-0067 — Reasoning display parity (hideThinkingSummary)
+# ADR-0067 — decision recorded under "Reasoning display parity (hideThinkingSummary)"
 
 - Contract owner: [providers/chat-compat.md](../providers/chat-compat.md#reasoning-display-parity-hidethinkingsummary)
 

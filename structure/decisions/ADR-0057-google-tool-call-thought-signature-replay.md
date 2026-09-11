@@ -1,4 +1,4 @@
-# ADR-0057 — Google tool-call thought-signature replay
+# ADR-0057 — decision recorded under "Google tool-call thought-signature replay"
 
 - Contract owner: [providers/google.md](../providers/google.md#google-tool-call-thought-signature-replay)
 

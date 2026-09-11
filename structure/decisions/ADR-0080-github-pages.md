@@ -1,4 +1,4 @@
-# ADR-0080 — GitHub Pages
+# ADR-0080 — decision recorded under "GitHub Pages"
 
 - Contract owner: [ops/docs-and-release.md](../ops/docs-and-release.md#github-pages)
 

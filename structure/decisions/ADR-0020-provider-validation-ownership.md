@@ -1,4 +1,4 @@
-# ADR-0020 — Provider validation ownership
+# ADR-0020 — decision recorded under "Provider validation ownership"
 
 - Contract owner: [config.md](../config.md#provider-validation-ownership)
 

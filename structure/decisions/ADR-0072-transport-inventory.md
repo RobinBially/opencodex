@@ -1,4 +1,4 @@
-# ADR-0072 — Transport inventory
+# ADR-0072 — decision recorded under "Transport inventory"
 
 - Contract owner: [transports/inventory.md](../transports/inventory.md#transport-inventory)
 

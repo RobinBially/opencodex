@@ -1,4 +1,4 @@
-# ADR-0058 — Google tool-result adjacency repair
+# ADR-0058 — decision recorded under "Google tool-result adjacency repair"
 
 - Contract owner: [providers/google.md](../providers/google.md#google-tool-result-adjacency-repair)
 

@@ -131,7 +131,7 @@ whole-config overwrite. Existing disabled-model visibility rules remain unchange
 Quota-aware fallback walks a configured chain when the featured model is exhausted, probing
 availability on a bounded interval (default 60 s, `src/codex/subagent-model-fallback.ts`). It rewrites
 the requested model id only; effort remains owned by the caps described under
-[Ultra reasoning level](#ultra-reasoning-level).
+[Ultra reasoning level](catalog.md#ultra-reasoning-level).
 
 `injectionModel` and `injectionEffort` are shared selections with two independent consumers.
 `multiAgentGuidanceEnabled` controls only OpenCodex-authored delegation guidance.

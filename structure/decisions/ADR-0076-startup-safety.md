@@ -1,4 +1,4 @@
-# ADR-0076 — Startup safety
+# ADR-0076 — decision recorded under "Startup safety"
 
 - Contract owner: [gui-and-management-api.md](../gui-and-management-api.md#startup-safety)
 

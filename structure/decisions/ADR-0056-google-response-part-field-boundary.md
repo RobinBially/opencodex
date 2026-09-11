@@ -1,4 +1,4 @@
-# ADR-0056 — Google response-part field boundary
+# ADR-0056 — decision recorded under "Google response-part field boundary"
 
 - Contract owner: [providers/google.md](../providers/google.md#google-response-part-field-boundary)
 

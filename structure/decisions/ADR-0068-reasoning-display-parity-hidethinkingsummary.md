@@ -1,4 +1,4 @@
-# ADR-0068 — Reasoning display parity (hideThinkingSummary)
+# ADR-0068 — decision recorded under "Reasoning display parity (hideThinkingSummary)"
 
 - Contract owner: [providers/chat-compat.md](../providers/chat-compat.md#reasoning-display-parity-hidethinkingsummary)
 

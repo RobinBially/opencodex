@@ -1,4 +1,4 @@
-# ADR-0090 — Hermes Model Capabilities
+# ADR-0090 — decision recorded under "Hermes Model Capabilities"
 
 - Contract owner: [clients/integrations.md](../clients/integrations.md#hermes-model-capabilities)
 

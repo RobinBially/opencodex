@@ -1,4 +1,4 @@
-# ADR-0060 — Kiro client parallel-tool hint
+# ADR-0060 — decision recorded under "Kiro client parallel-tool hint"
 
 - Contract owner: [providers/kiro.md](../providers/kiro.md#kiro-client-parallel-tool-hint)
 

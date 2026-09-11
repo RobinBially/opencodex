@@ -1,4 +1,4 @@
-# ADR-0018 — Config injection
+# ADR-0018 — decision recorded under "Config injection"
 
 - Contract owner: [config.md](../config.md#config-injection)
 

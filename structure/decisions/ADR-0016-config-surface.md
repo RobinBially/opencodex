@@ -1,4 +1,4 @@
-# ADR-0016 — Config surface
+# ADR-0016 — decision recorded under "Config surface"
 
 - Contract owner: [config.md](../config.md#config-surface)
 

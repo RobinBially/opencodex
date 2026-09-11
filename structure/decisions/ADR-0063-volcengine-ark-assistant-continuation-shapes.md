@@ -1,4 +1,4 @@
-# ADR-0063 — Volcengine Ark assistant continuation shapes
+# ADR-0063 — decision recorded under "Volcengine Ark assistant continuation shapes"
 
 - Contract owner: [providers/chat-compat.md](../providers/chat-compat.md#volcengine-ark-assistant-continuation-shapes)
 

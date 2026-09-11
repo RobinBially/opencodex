@@ -1,4 +1,4 @@
-# ADR-0031 — Responses HTTP/SSE
+# ADR-0031 — decision recorded under "Responses HTTP/SSE"
 
 - Contract owner: [transports/responses.md](../transports/responses.md#responses-httpsse)
 

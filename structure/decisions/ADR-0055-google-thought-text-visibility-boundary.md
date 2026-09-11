@@ -1,4 +1,4 @@
-# ADR-0055 — Google thought-text visibility boundary
+# ADR-0055 — decision recorded under "Google thought-text visibility boundary"
 
 - Contract owner: [providers/google.md](../providers/google.md#google-thought-text-visibility-boundary)
 

@@ -1,4 +1,4 @@
-# ADR-0096 — Z.ai quota destination ownership
+# ADR-0096 — decision recorded under "Z.ai quota destination ownership"
 
 - Contract owner: [gui-and-management-api.md](../gui-and-management-api.md#zai-quota-destination-ownership)
 

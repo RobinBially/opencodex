@@ -1,4 +1,4 @@
-# ADR-0089 — Process-local affinity diagnostics
+# ADR-0089 — decision recorded under "Process-local affinity diagnostics"
 
 - Contract owner: [providers/openai-tiers.md](../providers/openai-tiers.md#process-local-affinity-diagnostics)
 

@@ -1,4 +1,4 @@
-# ADR-0062 — Chat streaming client with a JSON upstream result
+# ADR-0062 — decision recorded under "Chat streaming client with a JSON upstream result"
 
 - Contract owner: [data-planes/inbound-compat.md](../data-planes/inbound-compat.md#chat-streaming-client-with-a-json-upstream-result)
 

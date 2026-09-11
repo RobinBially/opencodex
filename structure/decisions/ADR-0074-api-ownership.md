@@ -1,4 +1,4 @@
-# ADR-0074 — API ownership
+# ADR-0074 — decision recorded under "API ownership"
 
 - Contract owner: [gui-and-management-api.md](../gui-and-management-api.md#api-ownership)
 

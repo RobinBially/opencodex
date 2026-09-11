@@ -1,4 +1,4 @@
-# ADR-0071 — Combo streaming commit boundary
+# ADR-0071 — decision recorded under "Combo streaming commit boundary"
 
 - Contract owner: [transports/responses.md](../transports/responses.md#combo-streaming-commit-boundary)
 

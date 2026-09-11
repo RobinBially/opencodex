@@ -1,4 +1,4 @@
-# ADR-0030 — Stable service launcher (launchd and systemd)
+# ADR-0030 — decision recorded under "Stable service launcher (launchd and systemd)"
 
 - Contract owner: [ops/service-and-sidecars.md](../ops/service-and-sidecars.md#stable-service-launcher-launchd-and-systemd)
 

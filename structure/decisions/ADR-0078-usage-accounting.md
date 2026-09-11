@@ -1,4 +1,4 @@
-# ADR-0078 — Usage accounting
+# ADR-0078 — decision recorded under "Usage accounting"
 
 - Contract owner: [gui-and-management-api.md](../gui-and-management-api.md#usage-accounting)
 

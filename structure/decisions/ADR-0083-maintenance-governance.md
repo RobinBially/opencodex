@@ -1,4 +1,4 @@
-# ADR-0083 — Maintenance governance
+# ADR-0083 — decision recorded under "Maintenance governance"
 
 - Contract owner: [ops/docs-and-release.md](../ops/docs-and-release.md#maintenance-governance)
 

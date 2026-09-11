@@ -1,4 +1,4 @@
-# ADR-0001 — Product boundary
+# ADR-0001 — decision recorded under "Product boundary"
 
 - Contract owner: [overview.md](../overview.md#product-boundary)
 

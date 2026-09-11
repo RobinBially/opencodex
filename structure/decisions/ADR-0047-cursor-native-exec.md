@@ -1,4 +1,4 @@
-# ADR-0047 — Cursor Native Exec
+# ADR-0047 — decision recorded under "Cursor Native Exec"
 
 - Contract owner: [providers/cursor.md](../providers/cursor.md#cursor-native-exec)
 

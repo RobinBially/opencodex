@@ -1,4 +1,4 @@
-# ADR-0046 — Claude Desktop config-library resolution
+# ADR-0046 — decision recorded under "Claude Desktop config-library resolution"
 
 - Contract owner: [clients/claude-desktop.md](../clients/claude-desktop.md#claude-desktop-config-library-resolution)
 

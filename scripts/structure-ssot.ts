@@ -43,12 +43,47 @@ export type Manifest = {
   };
 };
 
-const REPO_ROOTS = ["src", "tests", "gui", "scripts", "docs", "docs-site", "bin", "go", "devlog", ".github", "structure"];
 const GENERATED_DOCS = ["INDEX.md"];
 const RULE_DOCS = ["AGENTS.md"];
 
 const toPosix = (p: string) => p.split("\\").join("/");
 const trimSlash = (p: string) => p.replace(/\/+$/, "");
+
+/** Parse and validate the manifest, so a malformed file is an actionable failure, not a stack trace. */
+export function loadManifest(raw: string): { manifest: Manifest } | { error: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (cause) {
+    return { error: "structure/manifest.json is not valid JSON: " + (cause as Error).message };
+  }
+  const m = parsed as Partial<Manifest>;
+  const problems: string[] = [];
+  const isArray = (v: unknown) => Array.isArray(v);
+  if (typeof m.sizeBudgetLines !== "number") problems.push("sizeBudgetLines must be a number");
+  if (!isArray(m.generatedPaths)) problems.push("generatedPaths must be an array");
+  if (!isArray(m.absentPaths)) problems.push("absentPaths must be an array");
+  if (!isArray(m.tiers)) problems.push("tiers must be an array");
+  if (!isArray(m.docs)) problems.push("docs must be an array");
+  else {
+    m.docs.forEach((doc, i) => {
+      if (typeof doc?.path !== "string") problems.push("docs[" + i + "].path must be a string");
+      if (typeof doc?.tier !== "number") problems.push("docs[" + i + "].tier must be a number");
+      if (typeof doc?.title !== "string") problems.push("docs[" + i + "].title must be a string");
+      if (typeof doc?.scope !== "string") problems.push("docs[" + i + "].scope must be a string");
+      if (!isArray(doc?.documents)) problems.push("docs[" + i + "].documents must be an array");
+    });
+  }
+  const grace = m.grace as Partial<Manifest["grace"]> | undefined;
+  if (!grace) problems.push("grace must be an object");
+  else {
+    for (const key of ["undocumentedSourceAreas", "unboundInvariants", "oversizeDocs", "staleRefs"] as const) {
+      if (!isArray(grace[key])) problems.push("grace." + key + " must be an array");
+    }
+  }
+  if (problems.length > 0) return { error: "structure/manifest.json is malformed: " + problems.join("; ") };
+  return { manifest: parsed as Manifest };
+}
 
 function listMarkdown(dir: string, root: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -181,23 +216,33 @@ export function runStructureChecks(repoRoot: string): string[] {
 
   const manifestPath = join(structureDir, "manifest.json");
   if (!existsSync(manifestPath)) return ["structure/manifest.json is missing"];
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Manifest;
+  const loaded = loadManifest(readFileSync(manifestPath, "utf8"));
+  if ("error" in loaded) return [loaded.error];
+  const manifest = loaded.manifest;
 
   const tracked = trackedPaths(repoRoot);
   const trackedLower = new Map<string, string>();
   if (tracked) for (const p of tracked) trackedLower.set(p.toLowerCase(), p);
 
-  /** A repository path is real when git tracks it, or when it exists and is not merely a case variant. */
+  /**
+   * A repository path is real when git tracks it. The filesystem is consulted only when the index
+   * could not be read at all: CI checks out a clean tree, so an untracked local leftover that
+   * satisfied the gate here would still fail there, which is the split verdict this module exists
+   * to remove. The cost is that a newly written file has to be staged before the gate can see it.
+   */
   const pathIsReal = (raw: string): "ok" | "missing" | string => {
     const p = trimSlash(raw);
-    if (tracked?.has(p)) return "ok";
-    if (tracked) {
-      const variant = trackedLower.get(p.toLowerCase());
-      if (variant && variant !== p) return variant;
-    }
-    return existsSync(join(repoRoot, p)) ? "ok" : "missing";
+    if (!tracked) return existsSync(join(repoRoot, p)) ? "ok" : "missing";
+    if (tracked.has(p)) return "ok";
+    const variant = trackedLower.get(p.toLowerCase());
+    if (variant && variant !== p) return variant;
+    return "missing";
   };
   const isTracked = (raw: string) => tracked?.has(trimSlash(raw)) ?? existsSync(join(repoRoot, trimSlash(raw)));
+  // Top-level tracked entries, so a backticked root file is validated like a directory path is.
+  const rootEntries = new Set<string>();
+  if (tracked) for (const p of tracked) rootEntries.add(p.split("/")[0]!);
+  else for (const entry of readdirSync(repoRoot, { withFileTypes: true })) rootEntries.add(entry.name);
 
   const present = listMarkdown(structureDir, structureDir);
   const sotOnDisk = present.filter((p) => !p.startsWith("decisions/") && !GENERATED_DOCS.includes(p) && !RULE_DOCS.includes(p));
@@ -238,7 +283,7 @@ export function runStructureChecks(repoRoot: string): string[] {
 
   // 3. links, anchors, repository paths, and the inline-decision ban
   const linkRe = /\]\(([^)\s]+)\)/g;
-  const pathRe = new RegExp(BT + "((?:" + REPO_ROOTS.join("|") + ")/[A-Za-z0-9_.@/-]*)" + BT, "g");
+  const pathRe = new RegExp(BT + "([A-Za-z0-9_.@-]+(?:/[A-Za-z0-9_.@-]*)*)" + BT, "g");
   const anchorCache = new Map<string, Set<string>>();
   for (const rel of present) {
     const abs = join(structureDir, rel);
@@ -254,12 +299,21 @@ export function runStructureChecks(repoRoot: string): string[] {
     linkRe.lastIndex = 0;
     while ((m = linkRe.exec(body))) {
       const target = m[1];
-      if (/^(?:https?|mailto):/.test(target) || target.startsWith("#")) continue;
+      if (/^(?:https?|mailto):/.test(target)) continue;
       const [file, fragment] = target.split("#");
-      const resolved = resolve(dirname(abs), file);
-      if (!existsSync(resolved)) {
-        fail("structure/" + rel + " links " + target + ", which does not exist");
-        continue;
+      // A fragment-only link points at this same document; it still has to name a real heading.
+      const resolved = file === "" ? abs : resolve(dirname(abs), file);
+      if (file !== "") {
+        const repoRel = toPosix(relative(repoRoot, resolved));
+        const verdict = pathIsReal(repoRel);
+        if (verdict === "missing") {
+          fail("structure/" + rel + " links " + target + ", which does not exist");
+          continue;
+        }
+        if (verdict !== "ok") {
+          fail("structure/" + rel + " links " + target + ", but the tracked path is " + verdict);
+          continue;
+        }
       }
       if (fragment && resolved.endsWith(".md")) {
         if (!anchorCache.has(resolved)) anchorCache.set(resolved, headingAnchors(readFileSync(resolved, "utf8")));
@@ -273,6 +327,8 @@ export function runStructureChecks(repoRoot: string): string[] {
     pathRe.lastIndex = 0;
     while ((m = pathRe.exec(body))) {
       const named = trimSlash(m[1]);
+      // Only tokens rooted at a real top-level entry are paths; the rest are ordinary code spans.
+      if (!rootEntries.has(named.split("/")[0]!)) continue;
       if (manifest.generatedPaths.some((g) => named === trimSlash(g) || named.startsWith(trimSlash(g) + "/"))) continue;
       if (manifest.absentPaths.some((a) => trimSlash(a.path) === named)) continue;
       if (manifest.grace.staleRefs.map(trimSlash).includes(named)) continue;
@@ -291,12 +347,19 @@ export function runStructureChecks(repoRoot: string): string[] {
   // 4. decision records
   const adrFiles = present.filter((p) => p.startsWith("decisions/"));
   const referenced = new Map<string, Set<string>>();
+  // Ownership is the declared link form, read with fences removed. A record path mentioned in prose
+  // or shown inside an example is not a claim of ownership, and counting it made an orphaned record
+  // look owned while reporting a second owner nobody could remove.
+  const ownerLinkRe = /^>\s*Decision record:\s*\[[^\]]*\]\(([^)\s]+)\)/gm;
   for (const doc of manifest.docs) {
     const abs = join(structureDir, doc.path);
     if (!existsSync(abs)) continue;
-    for (const hit of readFileSync(abs, "utf8").match(/decisions\/ADR-[0-9]{4}-[a-z0-9-]*\.md/g) ?? []) {
-      const key = "decisions/" + hit.split("/")[1];
-      referenced.set(key, (referenced.get(key) ?? new Set<string>()).add(doc.path));
+    const body = withoutFences(readFileSync(abs, "utf8"));
+    ownerLinkRe.lastIndex = 0;
+    let hit: RegExpExecArray | null;
+    while ((hit = ownerLinkRe.exec(body))) {
+      const file = hit[1].split("#")[0]!.split("/").pop()!;
+      referenced.set("decisions/" + file, (referenced.get("decisions/" + file) ?? new Set<string>()).add(doc.path));
     }
   }
   const ids = new Set<string>();
@@ -317,7 +380,9 @@ export function runStructureChecks(repoRoot: string): string[] {
 
   // 5. invariant-to-test bindings
   const overviewPath = join(structureDir, "overview.md");
-  if (existsSync(overviewPath)) {
+  if (!existsSync(overviewPath)) {
+    fail("structure/overview.md is missing; it is the invariant index, and its absence would silence every binding check");
+  } else {
     const body = readFileSync(overviewPath, "utf8");
     const blocks: { id: string; text: string }[] = [];
     let current: { id: string; text: string } | null = null;
@@ -370,6 +435,18 @@ export function runStructureChecks(repoRoot: string): string[] {
 
   // 6. source-to-doc map
   const described = new Map<string, string[]>();
+  // What a doc actually names, so a manifest claim cannot invent coverage the prose does not have.
+  const namedByDoc = new Map<string, string[]>();
+  for (const doc of manifest.docs) {
+    const abs = join(structureDir, doc.path);
+    if (!existsSync(abs)) continue;
+    const body = withoutFences(readFileSync(abs, "utf8"));
+    const found: string[] = [];
+    const re = new RegExp(pathRe.source, "g");
+    let hit: RegExpExecArray | null;
+    while ((hit = re.exec(body))) found.push(hit[1]);
+    namedByDoc.set(doc.path, found);
+  }
   for (const doc of manifest.docs) {
     const own = new Set<string>();
     for (const area of doc.documents) {
@@ -379,6 +456,10 @@ export function runStructureChecks(repoRoot: string): string[] {
       const verdict = pathIsReal(area);
       if (verdict === "missing") fail("structure/" + doc.path + " claims " + area + ", which this tree does not have");
       else if (verdict !== "ok") fail("structure/" + doc.path + " claims " + area + ", but the tracked path is " + verdict);
+      const names = namedByDoc.get(doc.path) ?? [];
+      if (!names.some((n) => n === area || n === trimSlash(area) || n.startsWith(area))) {
+        fail("structure/" + doc.path + " claims " + area + " but never names a path in it; describing an area means citing one");
+      }
     }
   }
   const graced = new Map(manifest.grace.undocumentedSourceAreas.map((g) => [g.path, g.reason]));

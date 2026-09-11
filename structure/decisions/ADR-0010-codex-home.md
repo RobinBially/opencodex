@@ -1,4 +1,4 @@
-# ADR-0010 — Codex home
+# ADR-0010 — decision recorded under "Codex home"
 
 - Contract owner: [codex-home.md](../codex-home.md#codex-home)
 

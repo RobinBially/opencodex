@@ -1,4 +1,4 @@
-# ADR-0066 — Anthropic structured-output compatibility
+# ADR-0066 — decision recorded under "Anthropic structured-output compatibility"
 
 - Contract owner: [providers/chat-compat.md](../providers/chat-compat.md#anthropic-structured-output-compatibility)
 

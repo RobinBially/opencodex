@@ -1,4 +1,4 @@
-# ADR-0049 — Heartbeat and stall deadline
+# ADR-0049 — decision recorded under "Heartbeat and stall deadline"
 
 - Contract owner: [transports/streaming-health.md](../transports/streaming-health.md#heartbeat-and-stall-deadline)
 

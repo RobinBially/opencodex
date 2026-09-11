@@ -1,4 +1,4 @@
-# ADR-0092 — ZCode Runtime Metadata
+# ADR-0092 — decision recorded under "ZCode Runtime Metadata"
 
 - Contract owner: [clients/integrations.md](../clients/integrations.md#zcode-runtime-metadata)
 

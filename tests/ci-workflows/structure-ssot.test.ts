@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { renderIndex, runStructureChecks, type Manifest } from "../../scripts/structure-ssot";
+import { loadManifest, renderIndex, runStructureChecks, type Manifest } from "../../scripts/structure-ssot";
 import { repoRoot } from "../helpers/repo-root";
 
 /**
@@ -66,6 +66,8 @@ function scaffold(): string {
       "",
       "- **INV-A-01** — alpha keeps working.",
       "  Enforced by " + BT + "tests/alpha/alpha.test.ts" + BT + ".",
+      "",
+      "Alpha lives in " + BT + "src/alpha/keep.ts" + BT + ".",
       "",
       "> Decision record: [ADR-0001](decisions/ADR-0001-alpha.md)",
       "",
@@ -267,6 +269,59 @@ describe("structure/ SSOT", () => {
     manifest.docs[0]!.documents.push("src/imaginary/");
     saveManifest(root, manifest);
     fires(root, "claims src/imaginary/, which this tree does not have");
+  });
+
+  test("a described area the doc never names", () => {
+    const root = scaffold();
+    write(root, "src/beta/new.ts", "export const beta = 1;\n");
+    const manifest = manifestOf(root);
+    manifest.docs[0]!.documents.push("src/beta/");
+    saveManifest(root, manifest);
+    fires(root, "claims src/beta/ but never names a path in it");
+  });
+
+  test("a fragment-only link that names no heading in its own document", () => {
+    const root = scaffold();
+    const body = readFileSync(join(root, "structure/overview.md"), "utf8");
+    write(root, "structure/overview.md", body + "\nSee [that rule](#no-such-heading).\n");
+    fires(root, "links #no-such-heading, but that heading anchor does not exist");
+  });
+
+  test("overview.md missing fails instead of silencing every invariant check", () => {
+    const root = scaffold();
+    const manifest = manifestOf(root);
+    manifest.docs = [];
+    saveManifest(root, manifest);
+    rmSync(join(root, "structure/overview.md"));
+    fires(root, "structure/overview.md is missing");
+  });
+
+  test("a record named in prose but not linked is not owned", () => {
+    const root = scaffold();
+    const body = readFileSync(join(root, "structure/overview.md"), "utf8").replace(
+      "> Decision record: [ADR-0001](decisions/ADR-0001-alpha.md)",
+      "The reasoning sits in decisions/ADR-0001-alpha.md for anyone curious.",
+    );
+    write(root, "structure/overview.md", body);
+    fires(root, "ADR-0001-alpha.md is not linked from any doc");
+  });
+
+  test("a bare filename is not treated as a repository path", () => {
+    const root = scaffold();
+    const body = readFileSync(join(root, "structure/overview.md"), "utf8");
+    write(root, "structure/overview.md", body + "\nCodex reads " + BT + "models_cache.json" + BT + " at startup.\n");
+    expect(runStructureChecks(root)).toEqual([]);
+  });
+
+  test("a malformed manifest is an actionable failure, not a stack trace", () => {
+    expect(loadManifest("{not json")).toHaveProperty("error");
+    const shapeless = loadManifest(JSON.stringify({ sizeBudgetLines: 600 }));
+    expect(shapeless).toHaveProperty("error");
+    expect((shapeless as { error: string }).error).toContain("docs must be an array");
+
+    const root = scaffold();
+    write(root, "structure/manifest.json", "{not json");
+    fires(root, "is not valid JSON");
   });
 
   test("INDEX.md that drifted from the manifest", () => {

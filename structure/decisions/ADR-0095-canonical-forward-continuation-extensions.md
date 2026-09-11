@@ -1,4 +1,4 @@
-# ADR-0095 — Canonical forward continuation extensions
+# ADR-0095 — decision recorded under "Canonical forward continuation extensions"
 
 - Contract owner: [adapters/compatibility-contracts.md](../adapters/compatibility-contracts.md#canonical-forward-continuation-extensions)
 

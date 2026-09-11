@@ -1,4 +1,4 @@
-# ADR-0087 — Model and wire identity
+# ADR-0087 — decision recorded under "Model and wire identity"
 
 - Contract owner: [providers/openai-tiers.md](../providers/openai-tiers.md#model-and-wire-identity)
 

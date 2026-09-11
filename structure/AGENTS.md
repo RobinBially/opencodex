@@ -28,6 +28,10 @@ structure doc.
 - A doc stays under the line budget in `manifest.json`. Over budget, split it along a topic boundary
   and give each half its own manifest entry. A `grace.oversizeDocs` entry is for a split already
   planned; the gate drops it again once the doc is back under budget.
+- **Stage a new file before running the gate.** Repository paths are resolved through the git index,
+  so a file you have written but not `git add`ed does not exist as far as the check is concerned. That
+  is deliberate: CI runs on a clean checkout, and a gate that passed on untracked local files would
+  disagree with it.
 - Know what the budget does and does not do: it is a line count, so a doc written as a wide table can
   carry far more prose per line than one written as paragraphs. It bounds the runaway-file failure,
   not density.
@@ -47,6 +51,8 @@ the inverse.
 - Describing an area means naming a path inside it. If a doc explains a subsystem without ever citing
   a path, the map cannot see it, and the area lands in `grace.undocumentedSourceAreas` instead — which
   is a signal to add the path reference, not a place to park work.
+  The gate enforces this in both directions: a `documents` entry whose doc never names a path inside
+  the area is rejected, so the map cannot claim coverage the prose does not have.
 - A new `src/<area>/` or top-level `src/*.ts` either joins a doc's `documents` list or is recorded in
   `grace.undocumentedSourceAreas` with a reason. The gate rejects one that is neither.
 
@@ -66,8 +72,12 @@ choice, why, and consequences.
   rewrite an old one to match. For the same reason the gate does not validate the repository paths a
   record names — a record describes a past tree, and holding it against the present one would force
   you to falsify it.
-- Records extracted during the 2026-09-11 reorganisation are titled after the doc section they were
-  taken from, which is where they belonged, not necessarily what they decided. Read the body.
+- A record's title names the doc section it was recorded under, not the decision it contains. That is
+  why every title reads `decision recorded under "<section>"`: the records extracted during the
+  2026-09-11 reorganisation took their heading from the section they sat in, and a title that looked
+  like a decision name but was not would send a maintainer to the wrong record. Read the body.
+- Ownership is the `> Decision record:` link, and nothing else. A record path mentioned in prose or
+  shown inside a fenced example is not a claim, so an illustration cannot make a doc a second owner.
 
 ## Invariants
 
@@ -101,6 +111,7 @@ verifies that:
 - file names are kebab-case, letter-initial, and at most one directory deep;
 - no doc exceeds the line budget, and no grace entry outlives the split it promised;
 - every relative link resolves, including its `#anchor`;
+- a fragment-only link resolves against its own document, which is where one broken anchor was hiding;
 - every backticked repository path a doc names is real, checked against the **git index** rather than
   the filesystem — `existsSync` cannot tell a tracked file from untracked local leftovers, and it is
   case-insensitive on Windows and case-sensitive on Linux CI, which would make the gate mean
@@ -110,7 +121,17 @@ verifies that:
 - every bound invariant names an existing test that names the id back, and every unbound one is
   recorded with a reason;
 - every `src/` directory and top-level module is described by a doc or recorded as undescribed;
+- the manifest itself parses and has the shape the gate expects, reported as a failure rather than a
+  stack trace;
+- `overview.md` exists, because its absence would otherwise silence every invariant check at once;
 - `INDEX.md` matches the manifest byte for byte.
 
 Checks are scanned with fenced code blocks removed, so an example inside a fence does not trip a rule
 it is only illustrating.
+
+One boundary worth stating, because it looks like a gap and is a deliberate one: a backticked token is
+treated as a repository path only when it is rooted at a real top-level entry, such as `src/` or
+`package.json`. A bare filename is not checked, because these docs name runtime files that are not in
+the repository at all — `config.toml`, `models_cache.json`, `ocx.pid` — and validating every
+filename-shaped token would reject them. Root documents are still covered where it matters, since a
+reference like [`MAINTAINERS.md`](../MAINTAINERS.md) is a link, and links are checked.

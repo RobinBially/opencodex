@@ -1,4 +1,4 @@
-# ADR-0004 — Lifecycle
+# ADR-0004 — decision recorded under "Lifecycle"
 
 - Contract owner: [runtime.md](../runtime.md#lifecycle)
 
