@@ -23,20 +23,27 @@ the client the turn is over.
      this.pendingFinalize = setTimeout(() => {
        this.pendingFinalize = undefined;
        if (this.expectedClose) return;
-       const terminal = finalizeAfterDrain(state);
-       if (terminal.length === 0) return;
 +      // A suspended tool turn is the turn whose state we most want to resume from,
 +      // and the one turn we cancelled before upstream could send it (#4245). Extend
 +      // once, bounded, rather than raising the blanket grace: the common case stays
 +      // at 50 ms and a stream that never sends a checkpoint still dies at a known
 +      // deadline.
-+      if (this.wantsCheckpointCapture
-+        && !this.capturedCheckpointBytes
-+        && !this.checkpointGraceExtended) {
-+        this.checkpointGraceExtended = true;
-+        this.scheduleClientToolFinalize(state, push, CHECKPOINT_CAPTURE_GRACE_MS);
-+        return;
-+      }
+ +      // This MUST run before finalizeAfterDrain(): that call reaches
+ +      // finalizeTurnEvents(), which sets state.terminated = true, and
+ +      // finalizeAfterDrain() returns [] for a terminated state. Draining first and
+ +      // then re-arming would make the retry return [] at the length check and leave
+ +      // the stream uncancelled. So mirror its two guards here instead of calling it.
+ +      if (!state.terminated
+ +        && state.openToolCalls.size === 0
+ +        && this.wantsCheckpointCapture
+ +        && !this.capturedCheckpointBytes
+ +        && !this.checkpointGraceExtended) {
+ +        this.checkpointGraceExtended = true;
+ +        this.scheduleClientToolFinalize(state, push, CHECKPOINT_CAPTURE_GRACE_MS);
+ +        return;
+ +      }
++      const terminal = finalizeAfterDrain(state);
++      if (terminal.length === 0) return;
        for (const event of terminal) push(event);
        debugProviderDiagnostic("cursor", "client-tool-suspend", {
          reason: "Responses bridge owns client tools; ending turn without fake mcpResult",
@@ -62,6 +69,12 @@ applied (:643, next to `activeClientToolFinalizeGraceMs`) from
 
 The added `graceMs` field also repays wp2's instrumentation debt: after this lands,
 the NEVER verdict 010 could not reach becomes measurable from shipped diagnostics.
+
+**Termination.** `checkpointGraceExtended` is set before the re-arm, so at most one
+extension happens per turn; the second pass falls through to `finalizeAfterDrain` and
+cancels. A sibling tool call reopening `openToolCalls` during the window is handled by
+the `size === 0` guard, which also stops the one extension from being spent on a turn
+that was not actually drained.
 
 ### What branch A is deliberately not doing
 
