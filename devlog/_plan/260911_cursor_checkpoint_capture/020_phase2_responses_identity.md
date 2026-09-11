@@ -42,3 +42,32 @@ honest outcome is to record that and close the half.
   any patch. Do not route it to branch B.
 - **BLOCKED** — the proxy rejects the Responses shape for this provider. Record what it
   rejected; do not infer the answer from the chat-completions result.
+
+## Result — STABLE
+
+Run 2026-09-11 on macbookpro-2, same account and toggle. Two `/v1/responses` turns,
+`store: true`, second carrying `previous_response_id` from the first. Log read with a
+fixed tail, not the line-count windowing that `012` shows is void.
+
+```
+turn 1  resp_dccfe5a37e224d1e908567403c53db10
+[ocx:cursor:checkpoint-continuation] {"mode":"full-replay","conversationHash":"cursor_cdbed7dcc","checkpointRefHash":"717a262274c68762","checkpointBytes":492,"wireModel":"default"}
+
+turn 2  resp_e023130d5f684c159951cd8458e72914  (previous_response_id set)
+[ocx:cursor:checkpoint-continuation] {"mode":"checkpoint","conversationHash":"cursor_cdbed7dcc","checkpointRefHash":"e28ce47f916e7213","checkpointBytes":595,"wireModel":"default"}
+```
+
+**STABLE.** `conversationHash` is identical across both turns, and turn 2 reports
+`mode: checkpoint` rather than `full-replay` — the continuation resumed from the
+checkpoint turn 1 committed, which is exactly the behaviour `#4245` says is missing.
+
+### What this removes from the issue
+
+C2 is an artifact of `/v1/chat/completions`, which carries no Responses state and
+derives a fresh conversation per request. It is not a defect on the path Codex takes,
+and it is not the reporter's problem. **This half of `#4245` is closed without a patch.**
+
+That also sharpens what is left. The reporter sees `cached_tokens: 0` and full replay;
+plain multi-turn conversation on `/v1/responses` demonstrably does not do that. So the
+surviving defect is C1 — turns that emit a client tool, where the checkpoint is
+cancelled away before it can be captured. Branch B in `030` is not needed.
