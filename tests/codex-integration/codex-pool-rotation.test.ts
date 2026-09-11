@@ -25,6 +25,7 @@ import {
   isCodexAccountInCooldown,
   pickAlternateCodexAccount,
   recordCodexUpstreamOutcome,
+  reconcileCodexRoutingHealth,
   resetCodexRoutingForManualSelection,
   resolveCodexAccountForThread,
 } from "../../src/codex/routing";
@@ -59,6 +60,24 @@ function saveTestCredential(id: string): void {
     expiresAt: Date.now() + 5 * 60_000,
     chatgptAccountId: `acct-${id}`,
   });
+}
+
+/**
+ * `reconcileCodexRoutingHealth` ignores a generation it has already seen, and the counter is
+ * module state shared by every test in this file, so each call needs a strictly higher one.
+ */
+let sweepGeneration = 9_000_000;
+function generationContext(codexAccountIds: ReadonlySet<string>) {
+  sweepGeneration += 1;
+  return {
+    generation: sweepGeneration,
+    providerNames: new Set<string>(),
+    comboIds: new Set<string>(),
+    comboTargets: new Set<string>(),
+    codexAccountIds,
+    oauthAccountKeys: new Set<string>(),
+    configRoots: new Set<string>(),
+  };
 }
 
 function makeThreeAccountConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
@@ -1125,6 +1144,50 @@ describe("selection order across rotation strategies", () => {
       // Without the revocation the preference outlives its account and blocks every write,
       // so the effective active stays empty and the pool can never commit a replacement.
       expect(getEffectiveActiveCodexAccountId(config)).toBe(served);
+    });
+
+    test("the generation sweep drops a preference whose account is gone", () => {
+      const config = makeThreeAccountConfig({
+        accountPoolStrategy: "fill-first",
+        activeCodexAccountId: "a",
+        autoSwitchThreshold: 80,
+      });
+      updateAccountQuota("a", 10);
+      updateAccountQuota("b", 10);
+      updateAccountQuota("c", 10);
+      resetCodexRoutingForManualSelection("a");
+
+      // The other removal path: an account edited out of the config by something the runtime
+      // never observed, so no delete call ever reached routing. The sweep is the only thing
+      // standing between that and a preference that can never be spent.
+      reconcileCodexRoutingHealth(generationContext(new Set(["b", "c"])));
+
+      config.codexAccounts = config.codexAccounts!.filter(account => account.id !== "a");
+      config.activeCodexAccountId = undefined;
+      const served = resolveCodexAccountForThread(null, config)!;
+      expect(served).not.toBe("a");
+      expect(getEffectiveActiveCodexAccountId(config)).toBe(served);
+    });
+
+    test("the generation sweep keeps a preference whose account is still live", () => {
+      const config = makeThreeAccountConfig({
+        accountPoolStrategy: "fill-first",
+        activeCodexAccountId: "a",
+        autoSwitchThreshold: 80,
+      });
+      updateAccountQuota("a", 90);
+      updateAccountQuota("b", 10);
+      updateAccountQuota("c", 10);
+      resetCodexRoutingForManualSelection("a");
+
+      // The half that makes the sweep a sweep rather than a reset: "a" is over threshold and
+      // is about to be routed around, but it is still in the roster, so the operator's
+      // selection has to survive.
+      reconcileCodexRoutingHealth(generationContext(new Set(["a", "b", "c"])));
+
+      const served = resolveCodexAccountForThread(null, config)!;
+      expect(served).not.toBe("a");
+      expect(getEffectiveActiveCodexAccountId(config)).toBe("a");
     });
 
     test("a 429 on the preferred account still promotes away from it", () => {
