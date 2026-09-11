@@ -6,7 +6,7 @@ import { CodexWsCorrelation } from "./codex-ws-correlation";
 import type { CodexWsSession } from "./codex-ws-session";
 import { UPGRADE_DEADLINE_MS, CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS, MAX_CODEX_WS_FRAME_BYTES,
   MAX_CODEX_WS_QUEUE_BYTES, markCodexWsResponse, normalizeResponsesWsRelayEvent, closedBeforeTerminalMessage,
-  codexWsFailureDetail, type CodexWsFailureStage } from "./codex-ws-wire";
+  codexWsFailureDetail, codexWsPreResponseFailure, type CodexWsFailureStage } from "./codex-ws-wire";
 
 interface ExchangeOptions {
   session: CodexWsSession;
@@ -148,7 +148,8 @@ export function codexWsExchange(options: ExchangeOptions): Promise<Response> {
     });
 
     const commitResponse = () => {
-      if (responseCommitted) return;
+      // A pre-response settlement (gateway status) has already resolved this exchange.
+      if (responseCommitted || terminal) return;
       responseCommitted = true;
       clearTimeout(preludeTimer);
       const responseHeaders = metadata?.snapshot() ?? new Headers();
@@ -159,11 +160,26 @@ export function codexWsExchange(options: ExchangeOptions): Promise<Response> {
       resolve(response);
     };
 
-    const failStream = (error: unknown) => {
+    const failStream = (error: unknown, status: 502 | 504 = 502) => {
       if (terminal) return;
       terminal = true;
-      // A frame may already be executing upstream. Settle as a body failure,
-      // never a fetch rejection/5xx that the pre-stream wrapper could resend.
+      if (sent && !responseCommitted && metadata) {
+        // Nothing has been promised to the client yet, so the honest answer is a gateway
+        // status, not a 200 whose body then fails. The frame may already be executing
+        // upstream: the response is marked non-replayable so no layer of this process sends
+        // it again, and the client applies its own retry policy as it would on the direct
+        // path. Same settle order as a refused create: snapshot, detach, close, dispose.
+        const prelude = metadata.snapshot();
+        cleanup();
+        try { controller?.close(); } catch { /* unused stream already closed */ }
+        session.dispose();
+        const message = error instanceof Error ? error.message : String(error);
+        resolve(codexWsPreResponseFailure(status, message, prelude));
+        return;
+      }
+      // A response is already flowing (or this transport has no metadata channel and
+      // committed at send). Settle as a body failure, never a fetch rejection/5xx that the
+      // pre-stream wrapper could resend.
       if (sent) commitResponse();
       cleanup();
       try { controller?.error(typeof error === "string" ? new Error(error) : error); } catch { /* stream already done */ }
@@ -182,6 +198,20 @@ export function codexWsExchange(options: ExchangeOptions): Promise<Response> {
       if (terminal || settledPreOpen) return;
       if (!sent) {
         settledPreOpen = true;
+        terminal = true;
+        cleanup();
+        session.dispose();
+        reject(reason);
+        return;
+      }
+      if (!responseCommitted && metadata) {
+        // Sent, unacknowledged. The proxy's own connect deadline is an origin-silence
+        // verdict and settles like one; a caller abort is the caller's decision, so the
+        // exchange rejects with that reason and disposing the socket cancels the turn.
+        if ((reason as { name?: unknown } | null)?.name === "TimeoutError") {
+          failStream(`codex websocket response did not start before the connect deadline${codexWsFailureDetail(failureStage())}`, 504);
+          return;
+        }
         terminal = true;
         cleanup();
         session.dispose();
@@ -237,7 +267,7 @@ export function codexWsExchange(options: ExchangeOptions): Promise<Response> {
       if (!metadata) commitResponse();
       else if (!responseCommitted && !terminal) {
         preludeTimer = setTimeout(
-          () => failStream(`codex websocket response prelude timed out${codexWsFailureDetail(failureStage())}`),
+          () => failStream(`codex websocket response prelude timed out${codexWsFailureDetail(failureStage())}`, 504),
           CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS,
         );
       }
@@ -288,8 +318,9 @@ export function codexWsExchange(options: ExchangeOptions): Promise<Response> {
       if (!controlFrame && !type.startsWith("response.") && type !== "error") return;
       if (!controlFrame) {
         try { correlation?.accept(normalized.payload); } catch (error) { failStream(error); return; }
-        // Correlation must run first: a reused socket's foreign-stream error
-        // must not become an HTTP refusal that could authorize account replay.
+        // Correlation must run first: a reused socket's foreign-stream error settles as a
+        // non-replayable 502 above, never as the refused-create 4xx projection below, which
+        // is the one status family that could authorize an account replay.
         if (metadata && sent && !responseCommitted && type === "error") {
           let rejection: Response | null;
           try { rejection = wrappedRejectionResponse(normalized.payload, metadata.snapshot()); }

@@ -1,4 +1,9 @@
 import { MAX_CLIENT_SSE_FRAME_BYTES } from "../sse-frame-buffer";
+import {
+  markResponseNonReplayable,
+  UPSTREAM_CLOSED_BEFORE_RESPONSE_CODE,
+  UPSTREAM_NO_RESPONSE_CODE,
+} from "../../lib/upstream-retry";
 // If the 101 never arrives (network black hole), give SSE a chance well before
 // the caller's connect timeout (default 200s) would fire.
 export const UPGRADE_DEADLINE_MS = 10_000;
@@ -46,6 +51,35 @@ export function isCodexWsUpstreamResponse(response: Response): boolean {
 export function markCodexWsResponse(response: Response, observed: boolean): void {
   codexWsUpstreamResponses.add(response);
   if (observed) quotaObservedResponses.add(response);
+}
+
+/**
+ * The honest settlement for an exchange that sent its create frame and never saw a
+ * response event.
+ *
+ * Before this existed the relay committed a 200 SSE Response and errored its body, on the
+ * reasoning that a 5xx could make the pre-stream retry wrapper resend the frame. That
+ * reasoning was right about the resend and wrong about the status: it turned "no response"
+ * into "a response that failed", removed the code a user agent uses for its own retry
+ * policy, and neutered the client's first-byte timeout with chunked headers. The client
+ * on the direct path receives a gateway status in this situation and retries under its own
+ * policy; this response restores that equivalence. The resend is forbidden by the
+ * non-replayable marker instead (see upstream-retry.ts), and the structured code lets the
+ * combo failover reach the same verdict after it re-parses the body.
+ *
+ * 504 is the origin's silence (nothing at all, or nothing but liveness, for the tolerated
+ * window); 502 is a transport that closed or misbehaved after the send. Both carry the
+ * content-free stage detail in the message and the metadata snapshot in the headers, the
+ * same way a refused create does, so quota captured during the prelude is not lost.
+ */
+export function codexWsPreResponseFailure(status: 502 | 504, message: string, prelude: Headers): Response {
+  const headers = new Headers(prelude);
+  headers.set("content-type", "application/json");
+  headers.set("cache-control", "no-store");
+  const code = status === 504 ? UPSTREAM_NO_RESPONSE_CODE : UPSTREAM_CLOSED_BEFORE_RESPONSE_CODE;
+  const response = new Response(JSON.stringify({ error: { type: "upstream_error", code, message } }), { status, headers });
+  markResponseNonReplayable(response);
+  return response;
 }
 
 const CLOSED_BEFORE_TERMINAL = "codex websocket closed before a Responses terminal event";

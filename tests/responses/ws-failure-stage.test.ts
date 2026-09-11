@@ -98,6 +98,20 @@ async function failureMessage(script: (ws: FakeWebSocket) => void): Promise<stri
     noFallback as unknown as typeof fetch,
     BOUNDED_WS_RUNTIME,
   );
+  return failureMessageOf(response);
+}
+
+/**
+ * A failure before the first response event is an honest gateway status whose JSON body
+ * carries the message; a failure after the response started is still an errored 200 body.
+ * Both shapes carry the same stage detail, which is what these cases read.
+ */
+async function failureMessageOf(response: Response): Promise<string> {
+  if (response.status >= 500) {
+    const body = await response.json() as { error?: { message?: unknown } };
+    if (typeof body.error?.message !== "string") throw new Error("expected a gateway failure body");
+    return body.error.message;
+  }
   try {
     await response.text();
   } catch (error) {
@@ -219,7 +233,8 @@ describe("codexWsUpstreamFetch failure reporting", () => {
       await opened.promise;
       jest.advanceTimersByTime(CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS);
       const response = await pending;
-      await expect(response.text()).rejects.toThrow(
+      expect(response.status).toBe(504);
+      expect(await failureMessageOf(response)).toMatch(
         /prelude timed out \[cause=no-upstream-frame request=\d+B sent=yes frames=0 control=0 relayed=0/,
       );
     } finally {
@@ -227,4 +242,3 @@ describe("codexWsUpstreamFetch failure reporting", () => {
     }
   });
 });
-
