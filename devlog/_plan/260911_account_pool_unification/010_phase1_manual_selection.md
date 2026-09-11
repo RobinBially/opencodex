@@ -289,3 +289,58 @@ The design therefore survives the lane's landings. What does not change is the
 coordination risk: L3 still owns these files for the dispatch round, so the B
 phase of this work-phase must not open until that ownership clears. Re-run this
 table at that point, because the guarantee above is a snapshot of `16f18d654`.
+
+## Audit round 4 — the shipped tests proved nothing
+
+The first implementation landed as PR #4284 with three new cases under
+`an operator selection outranks the pool cursor`, and a reviewer was asked one
+question the earlier rounds never asked: does each test fail without the production
+change? It does not. Measured by reverting only `src/codex/routing.ts` to the parent
+branch and keeping the new tests:
+
+```
+bun test tests/codex-integration/codex-pool-rotation.test.ts \
+  -t "an operator selection outranks the pool cursor"
+3 pass, 0 fail          # production change reverted
+```
+
+All three passed against a tree with no guard, no preference map and no consume site.
+They were re-assertions of things that already held: case 1 of
+`resetCodexRoutingForManualSelection` clearing the runtime cursor and seeding the ring,
+cases 2 and 3 of the failover promote, which this design deliberately leaves exempt. A
+test that cannot fail is not weak coverage, it is an empty claim, and criteria c-1 and
+c-2 had been recorded `met` against it.
+
+Three real defects were behind that blind spot.
+
+**Deletion never revoked the preference.** Pause and exclusion both route through
+`reconcileCodexActiveAfterExclusion`, which forgets it. Delete does not: the
+account-lifecycle path reaches routing through `clearCodexUpstreamHealthForAccount`
+(`routing.ts:327`, called from `account-lifecycle.ts:43`), which cleared two health maps
+and left the preference behind. Once the named account is gone nothing can ever succeed
+on it, so the one-shot can never be spent, and every later automatic write is suppressed
+until the process restarts. The generation sweep in `reconcileCodexRoutingHealth` had the
+same hole for an account removed by an edit the runtime never observed.
+
+**The model-detour promote was not guarded.** `promoteActiveCodexAccount` at the
+model-detour site sits twelve lines above the preemption site that this design already
+guards, and both are automatic picks competing with the operator. Only the failover
+promote earns the exemption, and for the stated reason: it runs because the account in
+use just failed.
+
+**The independent-scope entries were dead state.** Every write site the guard protects is
+already skipped for independent scopes, so those keys were seeded and consumed but never
+read. Removed: state nothing reads is what the next reader mistakes for a rule.
+
+The replacement cases are each red against the variant that removes the piece they cover:
+
+| Case | Red against |
+|---|---|
+| an over-threshold operator account is served around, not replaced | parent branch: reads `b`, expected `a` |
+| deleting the preferred account releases the hold | pre-fix head `63217d161`: reads `undefined`, expected `b` |
+| a successful dispatch spends the one-shot so the pool may move again | guard without consume: 15 of 69 rotation tests fail |
+
+The over-threshold case is also the one that states the user-facing rule plainly. An
+account past its switch threshold is temporarily spent, not wrong: the pool serves the
+request from elsewhere, and the operator's selection stays pointed where the operator put
+it, so the window rolling over returns routing to it without a second manual pick.
