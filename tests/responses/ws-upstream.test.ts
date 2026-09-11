@@ -20,6 +20,7 @@ import {
   MAX_CODEX_WS_FRAME_BYTES,
   MAX_CODEX_WS_QUEUE_BYTES,
   CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS,
+  CODEX_WS_LIVENESS_PING_INTERVAL_MS,
   shouldUseCodexWsUpstream as rawShouldUseCodexWsUpstream,
 } from "../../src/server/responses/ws-upstream";
 import type { OcxProviderConfig } from "../../src/types";
@@ -1302,6 +1303,106 @@ describe("codexWsUpstreamFetch", () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  describe("prelude liveness", () => {
+    // The 90 s bound is a silence bound, not a deadline: a peer that answers pings is alive,
+    // and how long an alive origin may take before response.created belongs to the client's
+    // own deadline and the operator's connectTimeoutMs, not to a fixed number in the proxy.
+    const noResend = (counter: { http: number }) => (async () => {
+      counter.http++;
+      return new Response("must not resend");
+    }) as typeof fetch;
+
+    test("a peer that answers pings stays alive past the silence bound and still completes with one send", async () => {
+      jest.useFakeTimers();
+      const opened = Promise.withResolvers<void>();
+      let pingsSent = 0;
+      installFake(ws => {
+        Object.assign(ws, { ping: () => { pingsSent++; ws.emit("pong", {}); } });
+        ws.emit("open", {});
+        opened.resolve();
+      });
+      const counter = { http: 0 };
+      try {
+        const pending = codexWsUpstreamFetch(CODEX_URL, streamingInit(), noResend(counter));
+        await opened.promise;
+        const ws = FakeWebSocket.instances[0];
+        // Seven steps: 105 s of no message frames, well past the 90 s bound, every step ponged.
+        for (let step = 0; step < 7; step++) jest.advanceTimersByTime(CODEX_WS_LIVENESS_PING_INTERVAL_MS);
+        expect(pingsSent).toBe(7);
+        ws.emit("message", { data: JSON.stringify({ type: "response.created", response: { id: "r1" } }) });
+        ws.emit("message", { data: JSON.stringify({ type: "response.completed", response: { id: "r1" } }) });
+        const response = await pending;
+        expect(response.status).toBe(200);
+        expect(await response.text()).toContain("event: response.completed");
+        expect(ws.sent).toHaveLength(1);
+        expect(counter.http).toBe(0);
+        // The pinger stops once the response has started.
+        jest.advanceTimersByTime(CODEX_WS_LIVENESS_PING_INTERVAL_MS * 4);
+        expect(pingsSent).toBe(7);
+        expect([...ws.listeners.values()].every(listeners => listeners.length === 0)).toBe(true);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test("a peer that never pongs keeps the previous 90 s bound and names the unanswered pings", async () => {
+      jest.useFakeTimers();
+      const opened = Promise.withResolvers<void>();
+      let pingsSent = 0;
+      installFake(ws => {
+        Object.assign(ws, { ping: () => { pingsSent++; } });
+        ws.emit("open", {});
+        opened.resolve();
+      });
+      const counter = { http: 0 };
+      try {
+        const pending = codexWsUpstreamFetch(CODEX_URL, streamingInit(), noResend(counter));
+        await opened.promise;
+        jest.advanceTimersByTime(CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS);
+        const response = await pending;
+        expect(response.status).toBe(504);
+        const failure = ((await response.json()) as { error: { code: string; message: string } }).error;
+        expect(failure.code).toBe("upstream_no_response");
+        expect(failure.message).toContain("prelude timed out");
+        expect(failure.message).toMatch(/pings=[56] pongs=0\]/);
+        expect(pingsSent).toBeGreaterThanOrEqual(5);
+        expect(FakeWebSocket.instances[0].sent).toHaveLength(1);
+        expect(counter.http).toBe(0);
+        expect(FakeWebSocket.instances[0].closed).toBe(true);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test("a control frame is proof of life too: quota keeps the exchange waiting", async () => {
+      jest.useFakeTimers();
+      const opened = Promise.withResolvers<void>();
+      installFake(ws => { ws.emit("open", {}); opened.resolve(); });
+      const counter = { http: 0 };
+      try {
+        const pending = codexWsUpstreamFetch(CODEX_URL, streamingInit(), noResend(counter));
+        await opened.promise;
+        const ws = FakeWebSocket.instances[0];
+        // No ping() on this socket. Quota at 60 s and 120 s resets the silence clock each time.
+        jest.advanceTimersByTime(60_000);
+        ws.emit("message", { data: JSON.stringify({ type: "codex.rate_limits", rate_limits: { primary: { used_percent: 10, window_minutes: 10080 } } }) });
+        jest.advanceTimersByTime(60_000);
+        ws.emit("message", { data: JSON.stringify({ type: "codex.rate_limits", rate_limits: { primary: { used_percent: 11, window_minutes: 10080 } } }) });
+        jest.advanceTimersByTime(60_000);
+        ws.emit("message", { data: JSON.stringify({ type: "response.created", response: { id: "r1" } }) });
+        ws.emit("message", { data: JSON.stringify({ type: "response.completed", response: { id: "r1" } }) });
+        const response = await pending;
+        expect(response.status).toBe(200);
+        expect(response.headers.get("x-codex-primary-used-percent")).toBe("11");
+        expect(await response.text()).toContain("event: response.completed");
+        expect(ws.sent).toHaveLength(1);
+        expect(counter.http).toBe(0);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
   });
 
   test("malformed native WS metadata still normalizes the real HTTP fallback routing hint", async () => {

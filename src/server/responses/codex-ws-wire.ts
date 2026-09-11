@@ -7,6 +7,17 @@ import {
 // If the 101 never arrives (network black hole), give SSE a chance well before
 // the caller's connect timeout (default 200s) would fire.
 export const UPGRADE_DEADLINE_MS = 10_000;
+// Liveness while the exchange waits for its first response event. The proxy cannot know
+// how long the origin legitimately needs before `response.created` (a multi-image replay
+// spends that time in prefill; #4083 measured 30 s), and it is not the party that owns
+// the slowness policy — the client holds its own deadline and the operator holds
+// `connectTimeoutMs`. What the proxy can decide is whether the peer is still there, and
+// WebSocket has a native answer: ping. While waiting, the exchange pings every
+// CODEX_WS_LIVENESS_PING_INTERVAL_MS on sockets that expose `ping()`; any inbound frame
+// or pong resets the silence clock, and only CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS of
+// nothing at all settles the exchange as an origin-silence 504. A peer that never pongs
+// keeps exactly the previous 90 s bound; a peer that does can never trip it while alive.
+export const CODEX_WS_LIVENESS_PING_INTERVAL_MS = 15_000;
 export const CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS = 90_000;
 // Keep the push-based WS transport inside the same memory envelope as the
 // bounded SSE relays that consume this response. Unlike fetch response bodies,
@@ -112,6 +123,10 @@ export type CodexWsFailureStage = {
   firstFrameMs: number | null;
   /** Milliseconds from send to this failure; null when the failure predates the send. */
   elapsedMs: number | null;
+  /** Liveness pings the exchange sent while waiting for the first response event. */
+  pings: number;
+  /** Pongs the peer answered with; zero on a peer that never answers pings. */
+  pongs: number;
 };
 
 /**
@@ -147,7 +162,8 @@ export function codexWsFailureDetail(stage: CodexWsFailureStage): string {
   return ` [cause=${classifyCodexWsFailure(stage)} request=${stage.requestBytes}B`
     + ` sent=${stage.sent ? "yes" : "no"} frames=${stage.upstreamFrames}`
     + ` control=${stage.controlFrames} relayed=${stage.relayedEvents}`
-    + ` first-frame=${duration(stage.firstFrameMs)} elapsed=${duration(stage.elapsedMs)}]`;
+    + ` first-frame=${duration(stage.firstFrameMs)} elapsed=${duration(stage.elapsedMs)}`
+    + ` pings=${stage.pings} pongs=${stage.pongs}]`;
 }
 
 export type ResponsesWsRelayEvent = {
