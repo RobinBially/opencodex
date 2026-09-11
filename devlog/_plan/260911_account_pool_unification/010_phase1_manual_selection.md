@@ -322,11 +322,18 @@ on it, so the one-shot can never be spent, and every later automatic write is su
 until the process restarts. The generation sweep in `reconcileCodexRoutingHealth` had the
 same hole for an account removed by an edit the runtime never observed.
 
-**The model-detour promote was not guarded.** `promoteActiveCodexAccount` at the
-model-detour site sits twelve lines above the preemption site that this design already
-guards, and both are automatic picks competing with the operator. Only the failover
-promote earns the exemption, and for the stated reason: it runs because the account in
-use just failed.
+**The model-detour promote was reported as unguarded — REBUTTED.** `promoteActiveCodexAccount`
+at the model-detour site sits twelve lines above the preemption site this design guards, so
+the symmetry argument is tempting. It is wrong, and the measurement says so: guarding it
+fails 8 cases in `tests/codex-integration/codex-routing.test.ts`, the
+`cannot re-pick a quota-drained shared account that remains model-eligible` family and its
+siblings. Those encode an older contract. A model detour is not the pool exercising
+discretion — it runs because the operator's account cannot serve the requested model at
+all — and under a rotating strategy that promote moves only the process-local cursor to
+whoever is actually serving, then releases the pin. `config.activeCodexAccountId`, the
+operator's persisted selection and the thing this preference exists to protect, is
+untouched either way. The guard was written, measured red, and reverted with the reason
+recorded at the call site.
 
 **The independent-scope entries were dead state.** Every write site the guard protects is
 already skipped for independent scopes, so those keys were seeded and consumed but never
