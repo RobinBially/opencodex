@@ -1,7 +1,8 @@
 # What omo actually reads
 
-Evidence: `omo-ai@5.0.0-0.beta.53` unpacked at `/tmp/omoprobe2/package`, and
-`@code-yeongyu/senpi@2026.9.10-2` unpacked at `/tmp/senpiprobe/package`. Schema
+Evidence: `omo-ai` version `5.0.0-0.beta.53` unpacked at `/tmp/omoprobe2/package`,
+and `@code-yeongyu/senpi` version `2026.9.10-2` unpacked at
+`/tmp/senpiprobe/package`. Schema
 claims below were executed against that tarball's own TypeBox compiler
 (`typebox@1.3.18`), not read off documentation.
 
