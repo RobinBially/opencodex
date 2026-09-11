@@ -43,27 +43,70 @@ src/oauth/anthropic-routing.ts
 
 MODIFY `src/codex/routing.ts`
 
-1. NEW module-local `manualPreference: { accountId: string } | null | undefined`
-   beside `runtimeActiveCodexAccountId` (`:56`). `undefined` means not yet seeded
-   from the persisted active account; `null` means consumed.
+1. NEW `manualPreference`, keyed by pool scope rather than a singleton:
+   `Map<poolKey, { accountId: string } | null>` beside `runtimeActiveCodexAccountId`
+   (`:56`), keyed by `codexPoolKeyForScope` (`:225`). A singleton would let an
+   independent quota scope (spark, reserve) apply or consume the shared one-shot,
+   because `isIndependentCodexQuotaScope` deliberately isolates those from the
+   shared `remember` path. An absent entry means not yet seeded; `null` means
+   consumed.
+
+   Seeding is explicit only. The entry is written by
+   `resetCodexRoutingForManualSelection` and nowhere else. There is no lazy seed
+   from `config.activeCodexAccountId` on first read, because an absent entry plus a
+   lazy seed would let an independent quota scope invent a preference it was never
+   given.
+
+   Invalidation, since Codex has no account-side equivalent of Anthropic's
+   `selectionRevision` (`apiKeySelectionRevision` is for keys and the store
+   `generation` is credential lineage): the preference is dropped only by an
+   OPERATOR-driven change of the active account, meaning another
+   `resetCodexRoutingForManualSelection` naming a different account, or an explicit
+   clear. A POOL-driven move must not drop it.
+
+   That distinction is load-bearing and was missed twice. An earlier draft said
+   "drop it whenever the accountId no longer equals the persisted active account",
+   which contradicts the guarantee below: `promoteActiveCodexAccount` (`:1677`)
+   calls `releaseCodexAccountPinFor` and then `setActiveCodexAccount` (`:1660`,
+   which clears `runtimeActiveCodexAccountId` at `:1661`) BEFORE it would reach the
+   guarded `remember`. Under the old rule a failover promote would move the
+   persisted active, look like a mismatch, and silently spend the operator's
+   one-shot. Keying invalidation to the operator path instead of to value equality
+   is what keeps F1 and F4 from cancelling each other.
 2. `resetCodexRoutingForManualSelection` (`:870`) additionally seeds
    `manualPreference` from `config.activeCodexAccountId`, mirroring
    `anthropic-routing.ts:810`. It keeps clearing thread affinity, clearing the
    runtime cursor and seeding round-robin, and keeps preserving cooldown.
-3. `pickUnboundStrategyAccount` (declared `:1446`, commit sites `:1470` and
-   `:1481`) returns early while a preference is live, so round-robin and
-   fill-first cannot call `rememberActiveCodexAccount` over the operator choice.
+3. The guard sits on BOTH writers, not only on `remember`.
+   `rememberActiveCodexAccount` (`:1644`) becomes a no-op while a live preference
+   names a different account, which closes its four call sites `:1470`, `:1481`,
+   `:1678` and `:2286` at once. That alone is still insufficient, because
+   `promoteActiveCodexAccount` (`:1677`) releases the pin and calls
+   `setActiveCodexAccount` (`:1660`) before it ever reaches `remember`. So
+   `promoteActiveCodexAccount` and `setActiveCodexAccount` also check for a live
+   preference and leave the operator's account in place for the pool-driven paths
+   (failover `:1878`, model detour `:2213`, exclusion `:1704`, cooldown `:2534`
+   and `:2584`). An operator PUT still moves them, because that path seeds a new
+   preference first.
 4. `getEffectiveActiveCodexAccountId` (`:1625`) returns the preference account
    while one is live, ahead of the runtime cursor.
 5. `resolveCodexAccountForThreadDetailed` (`:2069`) checks the preference before
-   `pickUnboundStrategyAccount` (`:2194`). If it names the persisted active
-   account and that account is selectable and not exhausted, return it with a
-   `manual` reason and do not call `rememberActiveCodexAccount`.
+   `pickUnboundStrategyAccount` (`:2194`). If the preference account is selectable
+   and not exhausted, return it with a `manual` reason and do not call
+   `rememberActiveCodexAccount`. Honouring does NOT require the preference to still
+   equal `config.activeCodexAccountId`: a pool-driven promote may legitimately have
+   moved that value, and treating the difference as staleness is the mistake the
+   audit rejected twice.
 6. `previewCodexAccountForRequest` (`:1987`) peeks the preference without
    consuming it.
-7. NEW consume-on-success, mirroring `anthropic-routing.ts:799-800`: after a
-   successful token and admission, set `manualPreference = null` and confirm
-   `config.activeCodexAccountId`. A failed lookup must not spend the preference.
+7. NEW consume-on-success, mirroring `anthropic-routing.ts:799-800`. Codex has no
+   equivalent of the Anthropic admission commit, so the hook must be named
+   explicitly: consume at the same point that already records a successful upstream
+   outcome for the resolved account, `recordCodexUpstreamOutcome`, and only for a
+   non-quota success. Consuming must call `setActiveCodexAccount` rather than only
+   nulling the entry, because nulling alone leaves `runtimeActiveCodexAccountId`
+   pointing at the pool's earlier pick and the next dispatch would silently return
+   to it. A failed lookup must not spend the preference.
 
 MODIFY `src/codex/auth-api.ts` PUT `/api/codex-auth/active` (`:2412-2444`):
 no contract change. It keeps `setCodexAccountPin` and
@@ -73,7 +116,9 @@ preference carries the one-shot. A null body still clears the pin (`:2440`).
 Explicitly NOT changed: `applyQuotaAutoSwitch` (`:1784`). It only moves at
 `autoSwitchThreshold`, and `releaseDrainedCodexAccountPin` (`:1757`) already
 treats that drain as the end of a pin. An earlier draft named it as the cause and
-the audit rejected that.
+the audit rejected that. Goalplan criterion c-2 therefore already holds on `dev`;
+what is missing is not behaviour but proof, so this layer adds the test rather
+than the code.
 
 ## Tests
 
@@ -94,7 +139,27 @@ new `codex-*.test.ts` would need entries in both `scripts/test-layout/layout.jso
 Semantic oracle: `tests/adapters/anthropic/anthropic-account-pool.test.ts` `:144`,
 `:209`, `:234`.
 
+Added after the A-phase audit, because the three files above prove the ceiling and
+the drain but not these:
+
+- a live preference survives `promoteActiveCodexAccount` reached through failover
+  and through a model detour, and survives a priority preemption
+- an independent quota scope neither applies nor consumes the shared preference
+- an operator selecting a different account replaces the previous preference, while
+  a pool-driven promote that moves the persisted active account does not spend it
+- criterion c-2 directly: with a pinned account that is selectable and under
+  `autoSwitchThreshold`, auto-switch holds, under both the quota strategy and
+  round-robin or fill-first
+
 ## Out of scope
+
+## Audit record
+
+The A-phase reviewer returned FAIL with one blocker and four majors, all folded
+above: the overwrite hole at `promoteActiveCodexAccount` and preemption, the
+singleton-versus-scope-keyed state, the missing invalidation rule in the absence
+of an account-side revision, the pin-versus-preference disagreement after a
+released pin, and the test gap against criterion c-2.
 
 The generic OAuth kind gets no preference in this layer; that arrives with the
 kernel in phase 2. No management or GUI change.
