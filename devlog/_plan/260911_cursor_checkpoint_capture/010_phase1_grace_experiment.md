@@ -67,3 +67,43 @@ back INCONCLUSIVE: add `graceMs: this.activeClientToolFinalizeGraceMs` to the
 `client-tool-suspend` diagnostic payload, build on macbookpro-2 in a throwaway
 checkout, and rerun arm B. NEVER is then `capturedBytes: 0` with a logged
 `graceMs` of 1500. That instrumented arm is wp2b, appended only if needed.
+
+## Result — LATE
+
+Run 2026-09-11 on macbookpro-2, opencodex 2.50.0, same account and toggle as `001`.
+Both arms used `cursor/auto-intelligence` and `tool_choice: required`.
+
+Arm A, 1 tool, no `parallel_tool_calls` (50 ms path):
+
+```
+[ocx:cursor:client-tool-suspend]       {"framesReceived":33,"elapsedMs":3299}
+[ocx:cursor:checkpoint-commit-refused] {"replayUnsafe":false,"emittedClientTool":true,"capturedAfterClientTool":false,"externalModel":false,"storeCheckpoints":true,"capturedBytes":0}
+conversationCheckpointUpdate frames in window: 0
+```
+
+Arm B, 12 tools, `parallel_tool_calls: true` (1500 ms path):
+
+```
+[ocx:cursor:frame]                     {"case":"conversationCheckpointUpdate","usedTokens":0}
+[ocx:cursor:client-tool-suspend]       {"framesReceived":34,"elapsedMs":4553}
+[ocx:cursor:checkpoint-commit-refused] {"replayUnsafe":false,"emittedClientTool":true,"capturedAfterClientTool":true,"externalModel":false,"storeCheckpoints":true,"capturedBytes":2977}
+conversationCheckpointUpdate frames in window: 1
+```
+
+**LATE.** Upstream does send `conversationCheckpointUpdate` on a suspended client-tool
+turn. At 50 ms the stream is cancelled before it lands; given a longer window the frame
+arrives and 2977 bytes are captured. The positive is self-proving, so the `elapsedMs`
+problem that made a NEVER unreachable never had to be solved. **wp2b is not needed.**
+
+### The second barrier, now visible for the first time
+
+Arm B also shows `capturedAfterClientTool: true` with `externalModel: false` — and it
+*still* refused. With bytes finally present, `toolSuspendedCommit` fails on the wire-model
+test alone. So the two barriers are now separated by evidence rather than by argument:
+
+1. capture never happened (all models) — fixed by `030` branch A1;
+2. the native wire-model gate — reachable only after A1, and still gated on wp5
+   proving the snapshot covers the tool call.
+
+The original triage proposed removing barrier 2 while barrier 1 made it unreachable.
+That is exactly what the probe was built to distinguish, and it did.
