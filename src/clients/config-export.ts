@@ -459,6 +459,51 @@ export function primeConfigPath(env: OpencodeLaunchEnv = process.env, home: stri
 }
 
 /**
+ * omo resolves its agent directory from THREE variables, in its own order:
+ * `OMO_CODING_AGENT_DIR`, then `SENPI_CODING_AGENT_DIR`, then
+ * `PI_CODING_AGENT_DIR`, falling back to `~/.omo/agent`. That is not an
+ * inference from the family resemblance — `bin/lib/agent-dir.js` publishes the
+ * list as `AGENT_DIR_ENV_NAMES` and the launcher pins the first two to whatever
+ * it resolves before spawning senpi, so the engine can never disagree with it.
+ *
+ * The order is load-bearing rather than cosmetic. A user with both
+ * `PI_CODING_AGENT_DIR` and `OMO_CODING_AGENT_DIR` set runs omo out of the omo
+ * one; checking Pi's first would have us write a catalog omo never reads.
+ *
+ * Each variable reports under its OWN name, because telling someone that
+ * `PI_CODING_AGENT_DIR` is relative when they set `OMO_CODING_AGENT_DIR` sends
+ * them to the wrong line of their shell profile. An empty or whitespace value
+ * falls through to the next name, which is what omo's own `.trim()`-then-test
+ * loop does.
+ *
+ * One divergence is deliberate: omo `resolve()`s a relative override against its
+ * own cwd and does not expand `~`. We refuse the relative form and do expand
+ * `~`, exactly as Pi, Prime, MCode and ZCode already do, because a background
+ * proxy and a foreground client have different working directories and would
+ * otherwise disagree about which file is named.
+ *
+ * Consequence worth knowing: a user who sets only `PI_CODING_AGENT_DIR` has Pi
+ * and omo reading ONE `models.json`. Both clients emit the same provider block
+ * through the same builder so the bytes agree; what cannot be shared is the
+ * ownership record, since two enabled clients would claim one file. That is
+ * omo's contract, not ours to paper over.
+ */
+export function omoAgentDir(env: OpencodeLaunchEnv = process.env, home: string = homedir()): string {
+  const omo = env.OMO_CODING_AGENT_DIR?.trim();
+  if (omo) return absoluteClientPath(omo, home, "OMO_CODING_AGENT_DIR");
+  const senpi = env.SENPI_CODING_AGENT_DIR?.trim();
+  if (senpi) return absoluteClientPath(senpi, home, "SENPI_CODING_AGENT_DIR");
+  const pi = env.PI_CODING_AGENT_DIR?.trim();
+  if (pi) return absoluteClientPath(pi, home, "PI_CODING_AGENT_DIR");
+  return join(home, ".omo", "agent");
+}
+
+/** omo's canonical custom-provider catalog, read by the senpi engine it wraps. */
+export function omoConfigPath(env: OpencodeLaunchEnv = process.env, home: string = homedir()): string {
+  return join(omoAgentDir(env, home), "models.json");
+}
+
+/**
  * Aside's state root. Unlike every other client here, Aside ships NO variable
  * that relocates it: its CLI carries `ASIDE_DAEMON_BASE_URL`,
  * `ASIDE_PRODUCT_VARIANT` and similar, and the only `.aside` path baked into the
@@ -1109,6 +1154,26 @@ function buildAsideContribution(ctx: ExportContext): ManagedContribution {
   return singleFragment("aside", ["providers", OPENCODE_PROVIDER_ID], doc.providers[OPENCODE_PROVIDER_ID]);
 }
 
+/**
+ * omo is the Pi document again, and this time the engine was checked rather
+ * than inferred: `omo-ai@beta` is a launcher around `@code-yeongyu/senpi`, and
+ * senpi's compiled validator accepts what `buildPiClientConfig` emits verbatim —
+ * the keyed `providers`, the `models` ARRAY whose identity is `id`, the
+ * `openai-completions` dialect, the loopback placeholder, and the
+ * `thinkingLevelMap` levels. Evidence:
+ * `devlog/_plan/260912_omo_client_integration/001_omo_contract.md`.
+ *
+ * The flag is passed HERE as well as in the spec's `build`, which is the one
+ * thing Prime and Aside do not do. They pass the default on both paths, so they
+ * are consistent; passing it on only one would make `ocx export --client omo`
+ * emit a `compat` block while enable and refresh wrote a file without it, and
+ * the two would drift apart at the first refresh.
+ */
+function buildOmoContribution(ctx: ExportContext): ManagedContribution {
+  const doc = buildPiClientConfig(ctx, true);
+  return singleFragment("omo", ["providers", OPENCODE_PROVIDER_ID], doc.providers[OPENCODE_PROVIDER_ID]);
+}
+
 export const EXPORT_CLIENTS: Record<ExportClientId, ExportClientSpec> = {
   opencode: {
     id: "opencode",
@@ -1295,6 +1360,37 @@ export const EXPORT_CLIENTS: Record<ExportClientId, ExportClientSpec> = {
     // Raycast's provider entry has no header field, and its `api_keys` value
     // is read literally (no env interpolation), so the only way to admit a
     // remote bind would be a plaintext secret on disk. Refuse instead.
+    loopbackOnly: true,
+  },
+  /*
+   * Appended rather than filed beside the other Pi-family clients on purpose.
+   * `EXPORT_CLIENT_IDS` is `Object.keys(EXPORT_CLIENTS)`, so this object's
+   * insertion order IS the public order, and three tests assert it exactly. The
+   * existing sequence is landing order — `pi` second, `prime` eleventh — not a
+   * grouping, so appending is the edit that leaves the other thirteen alone.
+   */
+  omo: {
+    id: "omo",
+    // Not a bare `models.json`: same Downloads-folder collision argument as
+    // `prime-models.json` and `aside-models.json`.
+    filename: "omo-models.json",
+    destination: env => omoConfigPath(env),
+    apiKeyEnv: "",
+    exportHint: "omo reads a non-secret placeholder from models.json; loopback needs no key.",
+    build: ctx => buildPiClientConfig(ctx, true),
+    format: "json",
+    summarize: summarizePi,
+    buildContribution: buildOmoContribution,
+    /*
+     * Loopback-only for OMP's and Prime's reason, NOT Pi's and Aside's. senpi's
+     * provider block does accept a `headers` map and does interpolate `$ENV` in
+     * its values, so unlike Aside there is somewhere the dedicated admission
+     * header could live. What does not exist is a builder that emits one:
+     * `buildPiClientConfig` writes no headers at all, which is why `pi` is
+     * loopback-only too. Teaching the shared builder to emit them would change
+     * four clients at once, so remote wiring is deferred and a non-loopback bind
+     * refuses rather than generating a config that 401s.
+     */
     loopbackOnly: true,
   },
 };
