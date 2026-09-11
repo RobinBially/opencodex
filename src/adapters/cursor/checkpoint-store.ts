@@ -193,6 +193,11 @@ export function cursorCheckpointRefHash(ref: string): string {
  * `pendingToolCalls` is documented upstream as raw JSON tool-call parts awaiting execution, so a
  * non-zero count on a suspended turn is the coverage evidence. The strings themselves are request
  * content and are never read here.
+ *
+ * If you extend this, keep it counts-only. `ConversationStateStructure` also carries
+ * `readPaths`, `previousWorkspaceUris`, and the `fileStates`/`fileStatesV2` keys — all of which
+ * are user paths or workspace identity, and all of which would turn a diagnostic into a privacy
+ * leak the moment someone returns them as values instead of lengths.
  */
 export function cursorCheckpointShape(checkpointBytes: Uint8Array | undefined): {
   turns: number;
