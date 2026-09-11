@@ -68,6 +68,29 @@ back INCONCLUSIVE: add `graceMs: this.activeClientToolFinalizeGraceMs` to the
 checkout, and rerun arm B. NEVER is then `capturedBytes: 0` with a logged
 `graceMs` of 1500. That instrumented arm is wp2b, appended only if needed.
 
+### wp2b closed — its deliverable shipped inside wp4
+
+wp2b was never needed for its original purpose: the experiment returned a positive, and a
+positive is self-proving. But the mechanism it specified — putting the real
+`graceMs` into the `client-tool-suspend` payload so a negative could ever be trusted —
+landed anyway, as part of #4281:
+
+```ts
+debugProviderDiagnostic("cursor", "client-tool-suspend", {
+  ...
+  graceMs: graceMsOverride ?? this.activeClientToolFinalizeGraceMs,
+  checkpointGraceExtended: this.checkpointGraceExtended,
+});
+```
+
+So the instrumented throwaway build this phase was reserved for is now unnecessary in
+both directions: nobody needs to reach NEVER here, and if a future reader does, the field
+is in the shipped binary. Closed as **delivered elsewhere**, not as skipped.
+
+That is worth separating from "not needed". A phase that is genuinely obsolete and a
+phase whose deliverable moved are different states, and recording the wrong one would
+leave the next reader thinking the diagnostic gap is still open.
+
 ## Result — LATE
 
 Run 2026-09-11 on macbookpro-2, opencodex 2.50.0, same account and toggle as `001`.
