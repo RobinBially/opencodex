@@ -158,8 +158,7 @@ export function codexWsExchange(options: ExchangeOptions): Promise<Response> {
     });
 
     const commitResponse = () => {
-      // A pre-response settlement (gateway status) has already resolved this exchange.
-      if (responseCommitted || terminal) return;
+      if (responseCommitted) return;
       responseCommitted = true;
       clearTimeout(silenceTimer);
       clearTimeout(pingTimer);
@@ -181,6 +180,8 @@ export function codexWsExchange(options: ExchangeOptions): Promise<Response> {
         // it again, and the client applies its own retry policy as it would on the direct
         // path. Same settle order as a refused create: snapshot, detach, close, dispose.
         const prelude = metadata.snapshot();
+        // Claim the commit slot so no later path can resolve a second, 200 Response.
+        responseCommitted = true;
         cleanup();
         try { controller?.close(); } catch { /* unused stream already closed */ }
         session.dispose();

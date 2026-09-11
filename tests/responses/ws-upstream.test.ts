@@ -1360,7 +1360,10 @@ describe("codexWsUpstreamFetch", () => {
       try {
         const pending = codexWsUpstreamFetch(CODEX_URL, streamingInit(), noResend(counter));
         await opened.promise;
-        jest.advanceTimersByTime(CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS);
+        // Step the clock so each chained ping timer is scheduled and fired in turn.
+        for (let elapsed = 0; elapsed < CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS; elapsed += CODEX_WS_LIVENESS_PING_INTERVAL_MS) {
+          jest.advanceTimersByTime(CODEX_WS_LIVENESS_PING_INTERVAL_MS);
+        }
         const response = await pending;
         expect(response.status).toBe(504);
         const failure = ((await response.json()) as { error: { code: string; message: string } }).error;
