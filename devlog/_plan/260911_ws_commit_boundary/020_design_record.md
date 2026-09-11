@@ -11,7 +11,8 @@
 
 ## New invariant
 
-- I5 The client commit never precedes the upstream acknowledgment. Before the first
+- I5 (exchanges with a metadata channel, i.e. the canonical Codex backend) The client commit never
+  precedes the upstream acknowledgment. Before the first
   `response.*`/`error` event the exchange holds no client Response. A failure in that window
   settles as a JSON error with an honest gateway status, marked non-replayable.
 
@@ -71,6 +72,10 @@ New cases: a pong resets the silence clock past 90 s and the response still comp
 send; a socket exposing `ping` is pinged every 15 s of prelude and stops after commit; a socket
 without `ping` is never pinged and keeps the 90 s bound; `fetchWithTransientRetry` returns a
 non-replayable 504 without a second call (`tests/lib/upstream-retry.test.ts`).
+
+## Audit amendments
+
+See `025_audit_round1.md`; its deltas override this file where they differ.
 
 ## Risks and their answers
 

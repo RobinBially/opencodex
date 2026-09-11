@@ -22,14 +22,18 @@ semantic review (`010_journey_evaluation.md`) overturned the first framing.
   honest HTTP status; replace the fixed prelude timer with silence-based liveness; cancel the
   upstream turn on a pre-commit client abort.
 - `src/server/responses/codex-ws-wire.ts` — liveness constants and the non-replayable body shape.
-- `src/lib/upstream-retry.ts` — a non-replayable marker that `fetchWithTransientRetry` honours.
+- `src/lib/upstream-retry.ts` — a non-replayable marker that `fetchWithTransientRetry` honours, and the
+  structured error codes the other resend paths stop on.
+- `src/server/responses/core.ts` — two early returns on the marker (pool quota rotation, opaque-blob
+  recovery); `src/combos/failover.ts` — structured-code stop. See 025.
+- `docs-site/src/content/docs/reference/configuration/server.md` — the prelude paragraph.
 - `tests/responses/ws-upstream.test.ts`, `tests/lib/upstream-retry.test.ts` — oracle updates and
   new cases.
 
 Out of scope, recorded in `020_design_record.md`: resume-by-id after 1006 (Codex does not request
 background responses, so the vendor resume surface does not apply), the opt-in provider path
 without a metadata channel (it commits at send today and keeps doing so), the create-frame size
-predicate, and `src/server/responses/core.ts`.
+predicate, and any core.ts change beyond the two marker guards named in 025.
 
 ## Rules for this unit
 
