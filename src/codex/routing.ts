@@ -2292,13 +2292,14 @@ export function resolveCodexAccountForThreadDetailed(
       && !preserveSharedSelectionForModelDetour
       && !isIndependentCodexQuotaScope(quotaScope)
     ) {
-      // Same rule as preemption below: a model detour that lands on another account is
-      // still an automatic pick, so it may serve this request without overwriting the
-      // operator's selection. Only the failover promote is exempt, because that one runs
-      // precisely because the account in use just failed.
-      if (!manualPreferenceBlocks(POOL_KEY_CODEX, strategyPick)) {
-        promoteActiveCodexAccount(config, strategyPick);
-      }
+      // NOT guarded by manualPreferenceBlocks, unlike preemption below. Measured: guarding
+      // it fails 8 cases in tests/codex-integration/codex-routing.test.ts, because a model
+      // detour is not the pool exercising discretion — the operator's account cannot serve
+      // this model at all. Under a rotating strategy this promote only moves the
+      // process-local cursor to whoever is actually serving and releases the pin; the
+      // operator's persisted activeCodexAccountId is left untouched either way, which is
+      // the thing the preference exists to protect.
+      promoteActiveCodexAccount(config, strategyPick);
     }
     return { status: "selected", accountId: strategyPick };
   }
