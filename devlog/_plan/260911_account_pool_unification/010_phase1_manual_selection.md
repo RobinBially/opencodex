@@ -233,6 +233,40 @@ So the implementation order matters. Build the consume path FIRST, not last:
 The pass was reverted rather than pushed. The branch `codex/manual-selection-wins`
 carries this document and no source change.
 
+## Measured again: guarding the writer is right, but the 429 path needs an exemption
+
+A second pass followed the order above. The consume site went in first, at the
+`outcomeClass === "success"` branch of `recordCodexUpstreamOutcome` (:2356), keyed by
+`codexPoolKeyForScope(quotaScope)` which that function already computes. Seeding and the
+exclusion revoke followed. At each of those two steps
+`tests/codex-integration/codex-pool-rotation.test.ts` stayed **69 pass, 0 fail**, which
+confirms the ordering advice above is correct.
+
+Adding the `rememberActiveCodexAccount` guard then produced **6 failures out of 69**, down
+from 15, and every single one is a 429 promotion case:
+
+- fill-first 429 advances to next stable account, not lowest usage
+- RR 429 promotes via ring, not lowest usage
+- 429 retry reuse promoteAccountId avoids a second RR ring advance
+- fill-first transient failover advances stable order, not lowest usage
+- scoped reset 429s retain strategy while excluding only the affected native quota
+- fill-first preserves its pre-feature fallback when every ordered tier is drained
+
+That is exactly the hazard blocker 3 named, and it is sharper than the blocker stated it.
+Gating the guard on `isCodexAccountSelectable(preferred)` is NOT sufficient: at the moment
+`promoteActiveCodexAccount` runs, the preferred account can still read as selectable
+because the 429 cooldown is recorded on a different path, so the guard holds and the
+promotion cannot land.
+
+The conclusion for the next pass: guarding the writer closes all four call sites at once,
+which is still the right shape, but the failover promote needs an explicit exemption. It
+only ever runs because the account in use just failed, so it is never an automatic pick
+competing with the operator. Either pass an explicit "this is a failover promote" flag
+through `rememberActiveCodexAccount`, or leave the writer unguarded and guard the two
+strategy commit sites plus preemption instead, accepting three guards rather than one.
+
+Reverted again rather than pushed. The measurement is the deliverable.
+
 The generic OAuth kind gets no preference in this layer; that arrives with the
 kernel in phase 2. No management or GUI change.
 
