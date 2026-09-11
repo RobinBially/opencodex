@@ -70,6 +70,17 @@ far; the `/v1/responses` path is untested and is what Codex users actually take.
 **Not a cause:** the native/external model split. Recorded so the next reader does
 not retry it.
 
+## Status of each cause
+
+| Cause | Verdict | Evidence |
+|---|---|---|
+| C1 tool-turn capture | **LATE — real, fixable** | `010` Result, `011`, `012`: 50 ms captures nothing, 1500 ms captures 3036 bytes after `toolCallStarted`, wire held constant |
+| C2 conversation identity | **Closed, no patch** | `020` Result: two threaded `/v1/responses` turns share `conversationHash cursor_cdbed7dcc` and turn 2 resumes with `mode: checkpoint`. Scoped to threaded conversations; an unthreaded one-shot legitimately starts fresh |
+| native/external gate | **Not a cause; gated behind wp5** | every model class refused identically at `capturedBytes: 0` before C1 was fixed |
+
+So the whole of `#4245` reduces to C1, and `030` branch A is the only patch this unit
+will produce. Branch B is dropped.
+
 ## Constraints
 
 - No change to `src/router.ts`, `src/server/lifecycle.ts`, `src/server/responses/core.ts`.
