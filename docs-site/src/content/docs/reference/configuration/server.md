@@ -36,9 +36,10 @@ runs helper features around provider requests.
 | `images?` | `OcxImagesConfig` | automatic OpenAI selection | Standalone Images relay options for Codex `image_gen`. |
 
 While the canonical ChatGPT upstream WebSocket waits for the first Responses event after
-sending the create frame, it watches for liveness rather than a fixed deadline. The proxy pings
-the socket every 15 seconds; any inbound frame — quota, response metadata, or a pong — resets a
-90-second silence clock, and only 90 seconds with nothing at all settles the request as an
+sending the create frame, it watches for liveness rather than a fixed deadline. When the socket
+supports protocol pings, the proxy pings it every 15 seconds. Any inbound frame — quota,
+response metadata, or a pong — resets a 90-second silence clock, so a socket without ping
+support still stays alive on its own frames, and only 90 seconds with nothing at all settles the request as an
 HTTP 504 with an `upstream_no_response` error. A slow but alive origin therefore waits for the
 client's own deadline or for `connectTimeoutMs` (default 200s), whichever comes first; a
 connect timeout that fires after the create frame was sent settles as the same 504. A socket

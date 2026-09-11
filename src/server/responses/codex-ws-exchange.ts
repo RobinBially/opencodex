@@ -247,6 +247,11 @@ export function codexWsExchange(options: ExchangeOptions): Promise<Response> {
         // Sent, unacknowledged. The proxy's own connect deadline is an origin-silence
         // verdict and settles like one; a caller abort is the caller's decision, so the
         // exchange rejects with that reason and disposing the socket cancels the turn.
+        // Both arrive on the same composite signal (fetchWithHeaderTimeout joins the
+        // caller's controller with its own), so the reason is the only discriminator: the
+        // deadline aborts with a TimeoutError DOMException, and every caller abort in this
+        // process (upstream.abort() in core.ts) carries the default AbortError. A future
+        // proxy-side deadline that aborts with TimeoutError would still be honestly a 504.
         if ((reason as { name?: unknown } | null)?.name === "TimeoutError") {
           failStream(`codex websocket response did not start before the connect deadline${codexWsFailureDetail(failureStage())}`, 504);
           return;
