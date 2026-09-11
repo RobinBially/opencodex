@@ -87,9 +87,32 @@ not retry it.
 | wp2 | `010_phase1_grace_experiment.md` | C1: does the frame arrive late, or never |
 | wp3 | `020_phase2_responses_identity.md` | C2: is it chat-completions-specific |
 | wp4 | `030_phase3_landing.md` | land the proven fix, or record the verdict |
+| wp2b | `010` closing section | only if wp2 is INCONCLUSIVE: instrumented rerun that can reach NEVER |
+| wp5 | `030` closing section | only if branch A lands: does a captured snapshot actually cover the tool call |
 
 wp2 and wp3 are independent of each other and both depend only on wp1. wp4 depends on
 wp2; if wp3 finishes first its outcome folds into wp4 as an additional branch.
+
+wp2b and wp5 were appended during wp1's audit (LOOP-UNIT-CHAIN-01). Both are
+conditional: neither runs unless its predecessor returns the outcome that needs it.
+
+## What the wp1 audit changed
+
+The first draft of this roadmap was audited and failed on two high findings, both
+folded before the roadmap was locked:
+
+1. `030` branch A paired the capture fix with dropping the native/external gate,
+   arguing that arrival order became a sound proof. It does not:
+   `conversationCheckpointUpdate` is classified liveness-only, so a snapshot can arrive
+   after the tool call with contents that predate it. The gate edit was removed and
+   became wp5, gated on decoding the snapshot.
+2. `010` used `client-tool-suspend.elapsedMs` to prove which grace branch ran. That
+   field is turn-relative, and this unit's own evidence already shows `elapsedMs: 2886`
+   on the 50 ms path. The experiment was downgraded to positive-only; a NEVER verdict
+   now requires wp2b.
+
+Recording this because both mistakes have the same shape as the one that opened the
+unit: a plausible mechanism asserted without checking what the field actually measures.
 
 ## Decision tree
 

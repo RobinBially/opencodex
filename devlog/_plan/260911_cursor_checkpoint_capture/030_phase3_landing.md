@@ -4,59 +4,88 @@ One branch per wp2/wp3 outcome. Only the branch the evidence selects gets built.
 
 ## Branch A — wp2 = LATE
 
-The 50 ms base grace cancels the stream before upstream serializes conversation
-state. Two edits, and the second is only safe *because* of the first.
+The 50 ms base grace cancels the stream before upstream serializes conversation state.
+**Branch A is one edit.** The wp1 audit removed a second one; see "What branch A is
+deliberately not doing" below.
 
-**A1. MODIFY `src/adapters/cursor/live-transport.ts`**, the client-tool finalize
-timer (currently lines 1006-1018):
+**A1. MODIFY `src/adapters/cursor/live-transport.ts`.** Give a drained client-tool
+turn one bounded extension when a checkpoint is wanted and none has arrived. The
+extension must happen *before* the terminal events are pushed — once `done` reaches
+the client the turn is over.
 
 ```diff
+   private scheduleClientToolFinalize(
+     state: ReturnType<typeof createCursorProtobufEventState>,
+     push: (message: CursorServerMessage) => void,
++    graceMsOverride?: number,
+   ): void {
+     this.clearPendingFinalize();
      this.pendingFinalize = setTimeout(() => {
        this.pendingFinalize = undefined;
        if (this.expectedClose) return;
        const terminal = finalizeAfterDrain(state);
        if (terminal.length === 0) return;
-       for (const event of terminal) push(event);
-+      // A suspended tool turn is exactly the turn whose state we most want to
-+      // resume from, and it is the one turn we used to cancel before upstream
-+      // could send it. Give the checkpoint frame one bounded extension rather
-+      // than a larger blanket grace: the common case stays fast, and a stream
-+      // that never sends one is still cancelled at a known deadline (#4245).
-+      if (this.wantsCheckpointCapture && !this.capturedCheckpointBytes && !this.checkpointGraceExtended) {
++      // A suspended tool turn is the turn whose state we most want to resume from,
++      // and the one turn we cancelled before upstream could send it (#4245). Extend
++      // once, bounded, rather than raising the blanket grace: the common case stays
++      // at 50 ms and a stream that never sends a checkpoint still dies at a known
++      // deadline.
++      if (this.wantsCheckpointCapture
++        && !this.capturedCheckpointBytes
++        && !this.checkpointGraceExtended) {
 +        this.checkpointGraceExtended = true;
 +        this.scheduleClientToolFinalize(state, push, CHECKPOINT_CAPTURE_GRACE_MS);
 +        return;
 +      }
-       debugProviderDiagnostic("cursor", "client-tool-suspend", { ... });
+       for (const event of terminal) push(event);
+       debugProviderDiagnostic("cursor", "client-tool-suspend", {
+         reason: "Responses bridge owns client tools; ending turn without fake mcpResult",
+         framesReceived: this.framesReceived,
+         elapsedMs: Date.now() - this.turnStartedAt,
++        graceMs: graceMsOverride ?? this.activeClientToolFinalizeGraceMs,
++        checkpointGraceExtended: this.checkpointGraceExtended,
+       });
        this.cancelCursorRun();
-     }, this.activeClientToolFinalizeGraceMs);
+-    }, this.activeClientToolFinalizeGraceMs);
++    }, graceMsOverride ?? this.activeClientToolFinalizeGraceMs);
+   }
 ```
 
-New constant beside the others at line 114-117, sized from the measured B-arm
-latency, not guessed. New fields `checkpointGraceExtended` and
-`wantsCheckpointCapture` (set from `contextUsageStoreCheckpoints !== false`).
+Also NEW beside the constants at :114-117:
+`const CHECKPOINT_CAPTURE_GRACE_MS = <measured>;` sized from the arrival latency wp2
+actually observed, not guessed. NEW private fields beside `pendingFinalize`:
+`private checkpointGraceExtended = false;` and
+`private wantsCheckpointCapture = false;` — the latter set where the run request is
+applied (:643, next to `activeClientToolFinalizeGraceMs`) from
+`activeRequest.contextUsageStoreCheckpoints !== false`. Reset
+`checkpointGraceExtended = false` in `open()` (:1033) alongside `framesReceived`.
 
-**A2. MODIFY `src/adapters/cursor.ts`** `commitCapturedCheckpoint`:
+The added `graceMs` field also repays wp2's instrumentation debt: after this lands,
+the NEVER verdict 010 could not reach becomes measurable from shipped diagnostics.
 
-```diff
-           const toolSuspendedCommit =
-             emittedClientTool
-             && capturedAfterClientTool
--            && isCursorExternalWireModel(activeRequest.modelId);
-+            // Once A1 makes the frame actually arrive, capturedAfterClientTool is a
-+            // real ordering proof for every model, so the wire-model test stops being
-+            // the thing standing in for it. Keep the proof; drop the proxy for it.
-+            ;
-```
+### What branch A is deliberately not doing
 
-A2 without A1 is the patch this unit exists to reject: with `capturedBytes: 0` it
-changes nothing, and with a checkpoint captured *before* the tool call it would claim
-coverage the bytes do not have. A1 is what makes `capturedAfterClientTool` mean
-something.
+The obvious companion edit — dropping `isCursorExternalWireModel` from
+`toolSuspendedCommit` in `src/adapters/cursor.ts:190` so native models also commit a
+tool-suspended checkpoint — is **excluded**, folded from the wp1 audit (high).
 
-`checkpointUsable` stays `!toolSuspendedCommit`, so a tool-suspended checkpoint is
-still only usable by the immediate trailing-toolResult continuation. This branch does
-not widen what a checkpoint claims.
+`capturedAfterClientTool` is set at `cursor.ts:312` from *arrival order*
+(`capturedAfterClientTool = emittedClientTool` when the byte-set changes). But
+`live-transport.ts:1221` classifies `conversationCheckpointUpdate` as **liveness-only**,
+the same bucket as a heartbeat. A periodic liveness snapshot can arrive after the tool
+call while its *contents* predate it. Arrival order is therefore not coverage, and
+committing on it would claim a prefix the bytes do not contain — the exact failure this
+unit was opened to prevent.
+
+A1 alone is still a real fix: it makes the external tool-suspended path, which the code
+already intends and which has never once succeeded in production, actually work.
+`checkpointUsable` stays `!toolSuspendedCommit`, so nothing widens what a checkpoint
+claims.
+
+Extending this to native models needs content coverage proven, not assumed. That is a
+separate work-phase (wp5) whose first task is to decode a captured
+`ConversationStateStructure` and check whether the tool call is in it. The wp1 auditor
+explicitly left that decode UNVERIFIED; do not skip it.
 
 **Tests.** `tests/providers/cursor/cursor-tool-suspended-checkpoint.test.ts`: a fake
 transport that emits `conversationCheckpointUpdate` after `tool_call_end` but later

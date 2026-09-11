@@ -46,13 +46,24 @@ touches nothing on the operator machine.
 
 ## Decision rule
 
-- **LATE** — B shows `capturedBytes > 0`, or a `conversationCheckpointUpdate` frame
-  that A lacked. The 50 ms base grace is the defect. Go to `030` branch A.
-- **NEVER** — B still shows `capturedBytes: 0` and no such frame, *and* B's
-  `elapsedMs` is clearly larger than A's, proving the longer window was actually
-  taken. Upstream does not serialize state for a suspended turn; no adapter-local fix.
-- **INCONCLUSIVE** — B's `elapsedMs` is not larger than A's, so the branch was not
-  taken. Fix the request shape and rerun; do not read the result.
+**This experiment can only return a positive.** Folded from the wp1 audit (high):
+`client-tool-suspend.elapsedMs` is `Date.now() - this.turnStartedAt`
+(`live-transport.ts:1015`, `turnStartedAt` set in `open()` at :1033), so it measures
+the whole turn, not the grace delay. `000_plan.md` already records `elapsedMs: 2886`
+on the 50 ms path. Model generation time swamps a 50-vs-1500 ms difference, so
+`elapsedMs` cannot witness which branch of
+`clientToolFinalizeGraceMsForRequest` ran. The original rule below was wrong and is
+replaced.
 
-That third case is the one worth guarding. Without comparing `elapsedMs` the
-experiment can measure the same 50 ms twice and look like a clean NEVER.
+- **LATE** — B shows `capturedBytes > 0`, or a `conversationCheckpointUpdate` frame
+  that A lacked. Self-proving: bytes can only appear if the window outlasted their
+  arrival. The 50 ms base grace is the defect. Go to `030` branch A.
+- **INCONCLUSIVE** — anything else. A `capturedBytes: 0` result here does **not**
+  establish NEVER, because nothing in the emitted diagnostics witnesses the grace that
+  was actually used.
+
+**Reaching a sound NEVER requires instrumentation**, and only if the cheap arm comes
+back INCONCLUSIVE: add `graceMs: this.activeClientToolFinalizeGraceMs` to the
+`client-tool-suspend` diagnostic payload, build on macbookpro-2 in a throwaway
+checkout, and rerun arm B. NEVER is then `capturedBytes: 0` with a logged
+`graceMs` of 1500. That instrumented arm is wp2b, appended only if needed.

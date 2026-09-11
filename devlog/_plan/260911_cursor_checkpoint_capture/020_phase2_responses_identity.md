@@ -32,7 +32,13 @@ honest outcome is to record that and close the half.
 
 - **STABLE** — same `conversationId` on both turns and `checkpointPresent: true` on
   turn 2. C2 is an artifact of the stateless endpoint. Record and close.
-- **UNSTABLE** — identity changes, or `checkpointPresent` stays false with
-  `missing_ref`. C2 is real on the path users take. Go to `030` branch B.
+- **UNSTABLE-IDENTITY** — `conversationId` differs between the two turns. That is C2
+  on the path users take. Go to `030` branch B.
+- **STABLE-IDENTITY-STORE-MISS** — `conversationId` matches but `checkpointPresent`
+  is false with `missing_ref`. Folded from the wp1 audit (medium): the original rule
+  ORed these two, but `request-builder.ts:454` returns `missing_ref` whenever no
+  thread or ref is resolved, which is reachable with a perfectly stable id. This is a
+  different defect — the checkpoint store, not identity — and needs its own doc before
+  any patch. Do not route it to branch B.
 - **BLOCKED** — the proxy rejects the Responses shape for this provider. Record what it
   rejected; do not infer the answer from the chat-completions result.
