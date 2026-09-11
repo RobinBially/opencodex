@@ -322,6 +322,13 @@ export function clearCodexUpstreamHealth(): void {
   upstreamHealth.clear();
   quotaScopedHealth.clear();
   runtimeActiveCodexAccountId = undefined;
+  // The reconcile watermark is part of this state, not something that outlives it. Keeping
+  // it across a full reset is incoherent: there is no health left to protect, yet
+  // recordCodexUpstreamOutcome would still drop a writer whose generation predates the
+  // watermark for any account missing from the equally stale live set. Left behind, it also
+  // leaks between test files, which is how it was found.
+  lastReconciledGeneration = 0;
+  liveHealthAccountIds = new Set();
 }
 
 export function clearCodexUpstreamHealthForAccount(accountId: string): void {
