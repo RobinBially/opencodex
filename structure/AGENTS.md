@@ -51,8 +51,10 @@ the inverse.
 - Describing an area means naming a path inside it. If a doc explains a subsystem without ever citing
   a path, the map cannot see it, and the area lands in `grace.undocumentedSourceAreas` instead — which
   is a signal to add the path reference, not a place to park work.
-  The gate enforces this in both directions: a `documents` entry whose doc never names a path inside
-  the area is rejected, so the map cannot claim coverage the prose does not have.
+  The gate checks the weak form of this: a `documents` entry is rejected when the doc never names the
+  area or any path under it. Naming the directory itself passes, which a table of directory names
+  does, so the check catches an invented claim but does not prove the doc says anything useful about
+  the area. That part is review.
 - A new `src/<area>/` or top-level `src/*.ts` either joins a doc's `documents` list or is recorded in
   `grace.undocumentedSourceAreas` with a reason. The gate rejects one that is neither.
 
@@ -78,6 +80,8 @@ choice, why, and consequences.
   like a decision name but was not would send a maintainer to the wrong record. Read the body.
 - Ownership is the `> Decision record:` link, and nothing else. A record path mentioned in prose or
   shown inside a fenced example is not a claim, so an illustration cannot make a doc a second owner.
+  The link has to land inside `decisions/`; pointing it elsewhere is rejected rather than matched on
+  the filename.
 
 ## Invariants
 
@@ -116,7 +120,10 @@ verifies that:
   the filesystem — `existsSync` cannot tell a tracked file from untracked local leftovers, and it is
   case-insensitive on Windows and case-sensitive on Linux CI, which would make the gate mean
   something different on each machine;
-- no doc body carries inline decision-log reasoning;
+- no doc body carries either inline decision-log marker: the bracketed Decision-Log heading that the
+  old layout used, or the Korean bullet template that followed it. Reasoning written as ordinary
+  prose is not detectable and stays a review judgement. The check is a literal match, which is why
+  this line describes the marker instead of quoting it;
 - every decision record is linked from exactly one doc, and no number is reused;
 - every bound invariant names an existing test that names the id back, and every unbound one is
   recorded with a reason;
@@ -124,14 +131,20 @@ verifies that:
 - the manifest itself parses and has the shape the gate expects, reported as a failure rather than a
   stack trace;
 - `overview.md` exists, because its absence would otherwise silence every invariant check at once;
-- `INDEX.md` matches the manifest byte for byte.
+- `INDEX.md` matches what the manifest generates, compared after newline normalisation so a CRLF
+  checkout is not a failure.
 
 Checks are scanned with fenced code blocks removed, so an example inside a fence does not trip a rule
 it is only illustrating.
 
 One boundary worth stating, because it looks like a gap and is a deliberate one: a backticked token is
-treated as a repository path only when it is rooted at a real top-level entry, such as `src/` or
-`package.json`. A bare filename is not checked, because these docs name runtime files that are not in
-the repository at all — `config.toml`, `models_cache.json`, `ocx.pid` — and validating every
-filename-shaped token would reject them. Root documents are still covered where it matters, since a
-reference like [`MAINTAINERS.md`](../MAINTAINERS.md) is a link, and links are checked.
+treated as a repository path only when its first segment is a top-level entry this repository has or
+used to have. That covers root files too, so `package.json` and `MAINTAINERS.md` are checked directly,
+not only through the links that point at them. What is NOT checked is a bare filename that was never
+a top-level entry, because these docs name runtime files that live in a user's home rather than in
+the repository — `config.toml`, `models_cache.json`, `ocx.pid` — and validating every filename-shaped
+token would reject them.
+
+The top-level set deliberately includes roots that no longer exist, such as `go/`. Deriving it from
+the current tree alone would make every reference to a deleted directory invisible at exactly the
+moment those references go stale.

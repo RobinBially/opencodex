@@ -45,6 +45,13 @@ export type Manifest = {
 
 const GENERATED_DOCS = ["INDEX.md"];
 const RULE_DOCS = ["AGENTS.md"];
+/**
+ * Roots that stay checked even after they are deleted. Deriving the root set from the tree alone
+ * means a reference becomes INVISIBLE exactly when the directory disappears, which is the moment
+ * stale references start appearing. go/ is the live example: it is retired and untracked, and
+ * without this list every remaining go/ mention would go unchecked.
+ */
+const HISTORICAL_ROOTS = ["src", "tests", "gui", "scripts", "docs", "docs-site", "bin", "go", "devlog", ".github", "structure", "readme"];
 
 const toPosix = (p: string) => p.split("\\").join("/");
 const trimSlash = (p: string) => p.replace(/\/+$/, "");
@@ -63,6 +70,12 @@ export function loadManifest(raw: string): { manifest: Manifest } | { error: str
   if (typeof m.sizeBudgetLines !== "number") problems.push("sizeBudgetLines must be a number");
   if (!isArray(m.generatedPaths)) problems.push("generatedPaths must be an array");
   if (!isArray(m.absentPaths)) problems.push("absentPaths must be an array");
+  else {
+    m.absentPaths.forEach((entry, i) => {
+      if (typeof entry?.path !== "string") problems.push("absentPaths[" + i + "].path must be a string");
+      if (typeof entry?.reason !== "string") problems.push("absentPaths[" + i + "].reason must be a string");
+    });
+  }
   if (!isArray(m.tiers)) problems.push("tiers must be an array");
   if (!isArray(m.docs)) problems.push("docs must be an array");
   else {
@@ -79,6 +92,24 @@ export function loadManifest(raw: string): { manifest: Manifest } | { error: str
   else {
     for (const key of ["undocumentedSourceAreas", "unboundInvariants", "oversizeDocs", "staleRefs"] as const) {
       if (!isArray(grace[key])) problems.push("grace." + key + " must be an array");
+    }
+    if (isArray(grace.undocumentedSourceAreas)) {
+      grace.undocumentedSourceAreas.forEach((entry, i) => {
+        if (typeof entry?.path !== "string") problems.push("grace.undocumentedSourceAreas[" + i + "].path must be a string");
+        if (typeof entry?.reason !== "string") problems.push("grace.undocumentedSourceAreas[" + i + "].reason must be a string");
+      });
+    }
+    if (isArray(grace.unboundInvariants)) {
+      grace.unboundInvariants.forEach((entry, i) => {
+        if (typeof entry?.id !== "string") problems.push("grace.unboundInvariants[" + i + "].id must be a string");
+        if (typeof entry?.reason !== "string") problems.push("grace.unboundInvariants[" + i + "].reason must be a string");
+      });
+    }
+    for (const key of ["oversizeDocs", "staleRefs"] as const) {
+      if (!isArray(grace[key])) continue;
+      grace[key].forEach((entry, i) => {
+        if (typeof entry !== "string") problems.push("grace." + key + "[" + i + "] must be a string");
+      });
     }
   }
   if (problems.length > 0) return { error: "structure/manifest.json is malformed: " + problems.join("; ") };
@@ -239,8 +270,9 @@ export function runStructureChecks(repoRoot: string): string[] {
     return "missing";
   };
   const isTracked = (raw: string) => tracked?.has(trimSlash(raw)) ?? existsSync(join(repoRoot, trimSlash(raw)));
-  // Top-level tracked entries, so a backticked root file is validated like a directory path is.
-  const rootEntries = new Set<string>();
+  // Top-level entries, so a backticked root FILE is validated directly, the same as a directory
+  // path. The historical roots are unioned in so a deleted tree keeps being checked.
+  const rootEntries = new Set<string>(HISTORICAL_ROOTS);
   if (tracked) for (const p of tracked) rootEntries.add(p.split("/")[0]!);
   else for (const entry of readdirSync(repoRoot, { withFileTypes: true })) rootEntries.add(entry.name);
 
@@ -358,8 +390,15 @@ export function runStructureChecks(repoRoot: string): string[] {
     ownerLinkRe.lastIndex = 0;
     let hit: RegExpExecArray | null;
     while ((hit = ownerLinkRe.exec(body))) {
-      const file = hit[1].split("#")[0]!.split("/").pop()!;
-      referenced.set("decisions/" + file, (referenced.get("decisions/" + file) ?? new Set<string>()).add(doc.path));
+      const target = hit[1].split("#")[0]!;
+      const repoRel = toPosix(relative(structureDir, resolve(dirname(abs), target)));
+      // The link has to land in decisions/; a basename match would let a record elsewhere claim
+      // ownership of a file it does not point at.
+      if (!repoRel.startsWith("decisions/")) {
+        fail("structure/" + doc.path + " points a Decision record line at " + target + ", which is not in decisions/");
+        continue;
+      }
+      referenced.set(repoRel, (referenced.get(repoRel) ?? new Set<string>()).add(doc.path));
     }
   }
   const ids = new Set<string>();
@@ -458,7 +497,7 @@ export function runStructureChecks(repoRoot: string): string[] {
       else if (verdict !== "ok") fail("structure/" + doc.path + " claims " + area + ", but the tracked path is " + verdict);
       const names = namedByDoc.get(doc.path) ?? [];
       if (!names.some((n) => n === area || n === trimSlash(area) || n.startsWith(area))) {
-        fail("structure/" + doc.path + " claims " + area + " but never names a path in it; describing an area means citing one");
+        fail("structure/" + doc.path + " claims " + area + " but never names it or a path in it");
       }
     }
   }
@@ -467,15 +506,28 @@ export function runStructureChecks(repoRoot: string): string[] {
     if (pathIsReal(g) !== "ok") fail("grace.undocumentedSourceAreas lists " + g + ", which this tree does not have");
     if (described.has(g)) fail(g + " is both described and listed as undescribed");
   }
-  const srcDir = join(repoRoot, "src");
-  if (existsSync(srcDir)) {
-    for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
-      const area = entry.isDirectory() ? "src/" + entry.name + "/" : "src/" + entry.name;
-      if (!entry.isDirectory() && !entry.name.endsWith(".ts")) continue;
-      // A claim on one file inside a directory does not cover the directory.
-      if (described.has(area) || graced.has(area)) continue;
-      fail(area + " is described by no doc; add it to a doc's " + BT + "documents" + BT + " list or record it in grace.undocumentedSourceAreas with a reason");
+  // Enumerated from the index when it is readable, for the same reason paths are resolved there:
+  // an untracked scratch directory under src/ must not produce a failure CI cannot reproduce.
+  const srcAreas = new Set<string>();
+  if (tracked) {
+    for (const p of tracked) {
+      if (!p.startsWith("src/")) continue;
+      const rest = p.slice("src/".length);
+      const slash = rest.indexOf("/");
+      if (slash === -1) {
+        if (rest.endsWith(".ts")) srcAreas.add("src/" + rest);
+      } else srcAreas.add("src/" + rest.slice(0, slash) + "/");
     }
+  } else if (existsSync(join(repoRoot, "src"))) {
+    for (const entry of readdirSync(join(repoRoot, "src"), { withFileTypes: true })) {
+      if (entry.isDirectory()) srcAreas.add("src/" + entry.name + "/");
+      else if (entry.name.endsWith(".ts")) srcAreas.add("src/" + entry.name);
+    }
+  }
+  for (const area of [...srcAreas].sort()) {
+    // A claim on one file inside a directory does not cover the directory.
+    if (described.has(area) || graced.has(area)) continue;
+    fail(area + " is described by no doc; add it to a doc's " + BT + "documents" + BT + " list or record it in grace.undocumentedSourceAreas with a reason");
   }
 
   // 7. generated index parity
