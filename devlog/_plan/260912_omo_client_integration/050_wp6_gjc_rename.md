@@ -47,3 +47,21 @@ catalogs, the CLI summary prose, and `docs-site`. A bare tree-wide search is the
 wrong check and would report itself failing forever, because the internal
 identifiers (`GajaeGeneratedConfig`, `gajaeConfigPath`, `buildGajaeClientConfig`,
 `OPENCODEX_GAJAE_API_KEY`) are exactly what this phase is not touching.
+
+## Verified after merge
+
+An independent audit read `origin/dev` and ran that check against what actually
+landed: zero `Gajae Code` across the nine locale catalogs, `src/cli/registry.ts`
+and `docs-site`. Every surviving `Gajae` is an identifier, the
+`OPENCODEX_GAJAE_API_KEY` env var, an i18n key *name* whose value is now `gjc`,
+an internal type, or a comment. The line this phase promised not to cross held:
+the client id is still `gajae`, the config path is still `~/.gjc/agent/models.yml`,
+the route is still `/api/client-integrations/gajae`, the download filename is
+still `gajae-models.yaml`, and the tab hash is still `integrations/gajae`. So an
+install that had already connected the client keeps resolving its stored enable
+record, which is the whole reason the id stayed put.
+
+The audit did find one mention this plan had missed: the header comment in
+`src/cli/export-command.ts` still said "Eight clients" and listed `Gajae` among
+the YAML dialects. It was stale on both counts — there were thirteen clients
+before omo — and it is corrected alongside the outcome note.
