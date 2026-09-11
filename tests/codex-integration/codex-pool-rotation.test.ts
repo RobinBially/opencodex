@@ -17,6 +17,7 @@ import {
 } from "../../src/codex/account-priority";
 import {
   clearCodexUpstreamHealth,
+  clearCodexUpstreamHealthForAccount,
   clearThreadAccountMap,
   CODEX_TRANSIENT_SOFT_AVOID_MS,
   previewCodexAccountForRequest,
@@ -1050,7 +1051,58 @@ describe("selection order across rotation strategies", () => {
       expect(resolveCodexAccountForThread(null, config)).toBe(chosen);
     });
 
+    // The three tests below are the ones that carry the feature. Each was driven red against
+    // the parent branch first: an assertion that passes with the production change reverted
+    // proves nothing, and the first draft of this block was exactly that — three tests that
+    // all passed without the guard, because they only re-asserted what
+    // resetCodexRoutingForManualSelection and the exempt failover promote already did.
+    test("an over-threshold operator account is served around, not replaced", () => {
+      const config = makeThreeAccountConfig({
+        accountPoolStrategy: "fill-first",
+        activeCodexAccountId: "a",
+        autoSwitchThreshold: 80,
+      });
+      // The operator's account is past the switch threshold, so fill-first advances off it.
+      // This is the ordinary case the report was about: the account the operator chose is
+      // temporarily spent, not wrong.
+      updateAccountQuota("a", 90);
+      updateAccountQuota("b", 10);
+      updateAccountQuota("c", 10);
+      resetCodexRoutingForManualSelection("a");
+
+      const served = resolveCodexAccountForThread(null, config)!;
+      expect(served).not.toBe("a");
+
+      // Serving the request from another account is the pool doing its job. Writing that
+      // account over the operator's selection is not: when a's window rolls over there
+      // would be nothing left pointing back at it. Without the guard this reads `served`.
+      expect(getEffectiveActiveCodexAccountId(config)).toBe("a");
+    });
+
     test("a successful dispatch spends the one-shot so the pool may move again", () => {
+      const config = makeThreeAccountConfig({
+        accountPoolStrategy: "fill-first",
+        activeCodexAccountId: "a",
+        autoSwitchThreshold: 80,
+      });
+      updateAccountQuota("a", 10);
+      updateAccountQuota("b", 10);
+      updateAccountQuota("c", 10);
+      resetCodexRoutingForManualSelection("a");
+      expect(resolveCodexAccountForThread(null, config)).toBe("a");
+
+      // The operator got what they asked for, so the hold is released. Without a consume
+      // site the preference is permanent and the cursor could never move again — measured:
+      // guard without consume fails 15 of the 69 rotation tests in this file.
+      recordCodexUpstreamOutcome(config, "a", 200);
+
+      updateAccountQuota("a", 90);
+      const served = resolveCodexAccountForThread(null, config)!;
+      expect(served).not.toBe("a");
+      expect(getEffectiveActiveCodexAccountId(config)).toBe(served);
+    });
+
+    test("deleting the preferred account releases the hold", () => {
       const config = makeThreeAccountConfig({
         accountPoolStrategy: "round-robin",
         accountPoolStickyLimit: 1,
@@ -1060,13 +1112,19 @@ describe("selection order across rotation strategies", () => {
       updateAccountQuota("b", 20);
       updateAccountQuota("c", 30);
       resetCodexRoutingForManualSelection("a");
-      expect(resolveCodexAccountForThread(null, config)).toBe("a");
 
-      // Success commits the operator choice and releases the hold. Without a consume site
-      // the preference would be permanent and the automatic cursor could never move again.
-      recordCodexUpstreamOutcome(config, "a", 200);
-      recordCodexUpstreamOutcome(config, "a", 429);
-      expect(getEffectiveActiveCodexAccountId(config)).not.toBe("a");
+      // Delete is the operator exit with no reconcile behind it: the account can never
+      // succeed again, so nothing else would ever spend the one-shot. The account-lifecycle
+      // delete path reaches routing through exactly this call.
+      config.codexAccounts = config.codexAccounts!.filter(account => account.id !== "a");
+      config.activeCodexAccountId = undefined;
+      clearCodexUpstreamHealthForAccount("a");
+
+      const served = resolveCodexAccountForThread(null, config)!;
+      expect(served).not.toBe("a");
+      // Without the revocation the preference outlives its account and blocks every write,
+      // so the effective active stays empty and the pool can never commit a replacement.
+      expect(getEffectiveActiveCodexAccountId(config)).toBe(served);
     });
 
     test("a 429 on the preferred account still promotes away from it", () => {

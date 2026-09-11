@@ -327,6 +327,11 @@ export function clearCodexUpstreamHealth(): void {
 export function clearCodexUpstreamHealthForAccount(accountId: string): void {
   upstreamHealth.delete(accountId);
   quotaScopedHealth.delete(accountId);
+  // Deletion is the third operator exit, next to pause and exclusion, and it is the one
+  // with no reconcile path behind it: once the account is gone nothing can succeed on it,
+  // so an unspent preference naming it would suppress the automatic cursor for every other
+  // account until the process restarts.
+  forgetManualPreference(accountId);
 }
 
 export function reconcileCodexRoutingHealth(context: GenerationContext): number {
@@ -341,6 +346,14 @@ export function reconcileCodexRoutingHealth(context: GenerationContext): number 
     if (context.codexAccountIds.has(accountId)) continue;
     quotaScopedHealth.delete(accountId);
     removed += 1;
+  }
+  // Sweep preferences the same way, for the account set this generation actually has. The
+  // delete path above is the direct route; this is the one that catches an account removed
+  // by an edit the runtime never saw. Deliberately not counted in `removed`, which reports
+  // health rows.
+  for (const [poolKey, preferred] of manualPreference) {
+    if (context.codexAccountIds.has(preferred)) continue;
+    manualPreference.delete(poolKey);
   }
   liveHealthAccountIds = new Set(context.codexAccountIds);
   lastReconciledGeneration = context.generation;
@@ -875,9 +888,10 @@ export function resetCodexRoutingForManualSelection(accountId: string): void {
   clearThreadAccountMap();
   // Manual selection is the operator source of truth — drop any automatic runtime cursor.
   runtimeActiveCodexAccountId = undefined;
-  // Record the pick as an unspent one-shot, over the same scope set the rotation ring is
-  // seeded for. An absent key means NO preference for that scope: an independent scope must
-  // never inherit the shared entry, or it would consume intent it was not given.
+  // Record the pick as an unspent one-shot on the SHARED scope only. An independent scope
+  // gets no entry on purpose: every write site the guard protects is already skipped for
+  // independent scopes, so an entry there would be state nothing reads — and state nothing
+  // reads is what the next reader mistakes for a rule.
   //
   // Seeding happens ONLY here. A pool-driven promote must never create or move a preference,
   // or the pool would manufacture an operator intent nobody expressed.
@@ -888,7 +902,6 @@ export function resetCodexRoutingForManualSelection(accountId: string): void {
   seedPoolRotationAccount(POOL_KEY_CODEX, accountId);
   for (const scope of new Set(Object.values(NATIVE_MODEL_QUOTA_SCOPES))) {
     if (isIndependentCodexQuotaScope(scope)) {
-      manualPreference.set(codexPoolKeyForScope(scope), accountId);
       seedPoolRotationAccount(codexPoolKeyForScope(scope), accountId);
     }
   }
@@ -2279,7 +2292,13 @@ export function resolveCodexAccountForThreadDetailed(
       && !preserveSharedSelectionForModelDetour
       && !isIndependentCodexQuotaScope(quotaScope)
     ) {
-      promoteActiveCodexAccount(config, strategyPick);
+      // Same rule as preemption below: a model detour that lands on another account is
+      // still an automatic pick, so it may serve this request without overwriting the
+      // operator's selection. Only the failover promote is exempt, because that one runs
+      // precisely because the account in use just failed.
+      if (!manualPreferenceBlocks(POOL_KEY_CODEX, strategyPick)) {
+        promoteActiveCodexAccount(config, strategyPick);
+      }
     }
     return { status: "selected", accountId: strategyPick };
   }
