@@ -665,6 +665,7 @@
     "gemini-inline.test.ts": "images",
     "gemini-web-search.test.ts": "adapters/google",
     "generic-oauth-failover.test.ts": "oauth",
+    "pool-kernel-generic-sweep.test.ts": "oauth",
     "github-copilot-account-origin.test.ts": "providers/github-copilot",
     "github-copilot-oauth.test.ts": "providers/github-copilot",
     "github-copilot-sse-rewrite.test.ts": "providers/github-copilot",

@@ -809,6 +809,7 @@
   "plan-video.test.ts": "videos",
   "plan.test.ts": "images",
   "policy-execution.test.ts": "routing",
+  "pool-kernel-generic-sweep.test.ts": "oauth",
   "port-reclaim.test.ts": "server",
   "ports.test.ts": "server",
   "prime-client.test.ts": "clients",
