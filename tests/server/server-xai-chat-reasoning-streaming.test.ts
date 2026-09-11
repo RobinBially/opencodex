@@ -151,7 +151,7 @@ describe("xAI OAuth Chat reasoning streaming", () => {
       let received = "";
       await Promise.race([
         (async () => {
-          while (!received.includes("response.reasoning_summary_text.delta")) {
+          while (!received.includes("response.reasoning_text.delta")) {
             const chunk = await reader!.read();
             if (chunk.done) throw new Error("stream ended before the first xAI reasoning delta");
             received += decoder.decode(chunk.value, { stream: true });
@@ -184,7 +184,7 @@ describe("xAI OAuth Chat reasoning streaming", () => {
         if (chunk.done) break;
         received += decoder.decode(chunk.value, { stream: true });
       }
-      const reasoningIndex = received.indexOf("response.reasoning_summary_text.delta");
+      const reasoningIndex = received.indexOf("response.reasoning_text.delta");
       const contentIndex = received.indexOf("response.output_text.delta");
       const completedIndex = received.indexOf("response.completed");
       expect(reasoningIndex).toBeGreaterThanOrEqual(0);

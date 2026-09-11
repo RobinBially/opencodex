@@ -1091,7 +1091,6 @@
     "responses-pool-401-refresh.test.ts": "responses",
     "responses-pool-refresh-attribution.test.ts": "responses",
     "responses-reasoning-summary-passthrough.test.ts": "responses",
-    "responses-reasoning-summary-rewrite.test.ts": "responses",
     "responses-routed-web-search-fields.test.ts": "responses",
     "responses-self-named-namespace-scrub.test.ts": "responses",
     "responses-shadow-intercept.test.ts": "responses",

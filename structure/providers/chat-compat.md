@@ -215,18 +215,13 @@ honored by BOTH reasoning paths: anthropic `thinking_delta` AND raw `reasoning_r
 item (`summary: []`, txt-only `ocxr1:` `encrypted_content`, no text deltas) — invisible in the
 Codex app, so tool cells group like native models — while the text still round-trips for
 `preserveReasoningContentModels` replay. Visible mode (summary "auto") keeps the raw
-`content[reasoning_text]` shape. Diagnosis and codex-rs grouping evidence:
-`devlog/_fin/260709_native_response_pattern/`.
-
-The content-to-summary channel rewrite skips any reasoning item that carries a native
-`encrypted_content` blob. The blob is opaque, state-bearing provider data, so the item must
-round-trip unchanged unless that backend has an explicit replay contract permitting a rewrite.
-This defensively protects providers that issue blobs and later join the route through
-`preserveReasoningContentModels`. The rewrite's round trip was verified against DeepSeek, which is
-`statelessResponses` and issues no blob. Grok is unaffected in practice because it natively emits
-summary-channel reasoning and no `reasoning_text` events, so this content-to-summary item rewrite
-does not engage on its route. Only the stored item is exempt — `reasoning_text` delta events carry
-no blob and still route to the summary channel, so the live expandable trace is unchanged.
+`content[reasoning_text]` shape: raw deltas stream as `response.reasoning_text.delta` and the final
+item carries `content: [{type: "reasoning_text", text}]`, so Codex applies its own display policy —
+the desktop thinking band shows the "Thinking…" placeholder, and raw text appears only when
+`show_raw_agent_reasoning` is enabled. Routing raw CoT through the summary channel instead (the
+#45 display intent, intentionally reverted 260911) put unsummarized thinking in the desktop band,
+which only fits native OpenAI providers that author real summaries. Diagnosis and codex-rs
+grouping evidence: `devlog/_fin/260709_native_response_pattern/`.
 
 The process-local raw-reasoning fallback is fail-closed unless a request has an explicit client
 thread plus an exact provider destination, wire adapter, final model, and physical credential

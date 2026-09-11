@@ -363,12 +363,6 @@ import {
   repairResponsesJsonItemIds,
 } from "../responses-item-id-repair";
 import {
-  createReasoningSummaryChannelPayloadRewrite,
-  rewriteReasoningSummaryInJson,
-  rewriteReasoningSummaryInJsonString,
-  routeUsesContentChannelReasoning,
-} from "../responses-reasoning-summary-rewrite";
-import {
   createImageGenCallRestoreRewrite,
   imageGenToolCallAliases,
   restoreImageGenCallsInJson,
@@ -4978,10 +4972,7 @@ async function handleResponsesInner(
         ? JSON.parse(normalizeFunctionCompletionJson(JSON.stringify(restored)))
         : restored) as { id?: unknown; output?: unknown; status?: unknown };
       // Replay overlap compares the items the client echoes, including visible reasoning shape.
-      const replayResponse = parsed.options.hideThinkingSummary !== true
-        && routeUsesContentChannelReasoning(route.provider, route.modelId)
-        ? rewriteReasoningSummaryInJson(restoredResponse) as typeof restoredResponse
-        : restoredResponse;
+      const replayResponse = restoredResponse;
       if (
         undeclaredToolGuardActive
         && undeclaredToolCallNameInResponse(
@@ -5975,10 +5966,6 @@ async function handleResponsesInner(
           ? createResponsesItemIdPayloadRewrite(repairConfig!, translatorBudget)
           : undefined,
         responseModelRewrite,
-        parsed.options.hideThinkingSummary !== true
-          && routeUsesContentChannelReasoning(route.provider, route.modelId)
-          ? createReasoningSummaryChannelPayloadRewrite()
-          : undefined,
       ].filter((rewrite): rewrite is NonNullable<typeof rewrite> => rewrite !== undefined);
       // #893: sparse-snapshot gateways get field backfills AND lifecycle event
       // injection at the block level, after payload rewrites. Defaults come
@@ -6249,13 +6236,7 @@ async function handleResponsesInner(
         const modelRewritten = parsed._responseModelId !== undefined && parsed._responseModelId !== parsed.modelId
           ? rewriteResponsesModelJson(repaired, parsed._responseModelId)
           : repaired;
-        // The bounded-JSON answer bypasses the SSE payload rewrite, so content-
-        // channel reasoning needs the same normalization here for the plain
-        // JSON answer and every reframed-SSE variant built from clientJson.
-        return parsed.options.hideThinkingSummary !== true
-          && routeUsesContentChannelReasoning(route.provider, route.modelId)
-          ? rewriteReasoningSummaryInJsonString(modelRewritten)
-          : modelRewritten;
+        return modelRewritten;
       })();
       // #1700: same fail-closed policy as the SSE relay above. Both the plain JSON answer and
       // the reframed-SSE branch below are built from this body, so one check covers them. This
