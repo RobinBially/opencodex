@@ -9,6 +9,30 @@ Extract the rotation primitives into a credential-neutral kernel, then make the
 generic OAuth kind actually consume the `strategy` and `autoSwitchThreshold` it
 already persists.
 
+## Availability and the slice this cycle can actually take
+
+Re-verified at the wp2 P entry against `origin/dev`. The lane partition for the
+round in flight does not list `src/oauth/generic-account-failover.ts`,
+`src/oauth/pool-settings-capability.ts` or `src/codex/pool-rotation.ts`, so the
+kernel extraction and the generic-kind strategy work are available now. Two things
+are not:
+
+- `src/codex/routing.ts` is owned by lane L3, so the Codex-side import swap waits.
+- `src/server/responses/core.ts` is owned by lane L1 and is the most contended
+  file in the round with four open PRs, which is also why the wp4b call-site
+  wiring could not follow #4277 immediately.
+
+This cycle therefore takes the kernel plus the generic consumer and leaves the
+Codex and Anthropic import swaps to a later layer. That ordering is not a
+concession: a kernel that nothing imports yet is still verifiable through the
+generic kind, and it keeps the contended files out of this PR entirely.
+
+Anchors confirmed present on `origin/dev`: `selectPriorityTier` :86,
+`pickRoundRobinAccount` :189, `notePoolRotationSuccess` :213,
+`seedPoolRotationAccount` :245, `reconcilePoolRotationState` :260 in
+`pool-rotation.ts`; `preferredInitialAccount` :246 and the
+`rankAccountsByHeadroom` import :19 in `generic-account-failover.ts`.
+
 ## Current behaviour (verified on dd9a2906b)
 
 The primitives already take an opaque `poolKey`, so a third key is addable:
