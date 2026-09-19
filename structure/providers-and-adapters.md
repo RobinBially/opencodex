@@ -79,9 +79,19 @@ classification — an unverified tier is not evidence.
 Because `enrichProviderFromRegistry` fills `noVisionModels` all-or-nothing and fills
 `modelInputModalities` per-key beneath the saved value, both halves of a stale classification are
 frozen into any config saved while it was current. `src/providers/stale-vision-classification-migration.ts`
-rewrites exactly those two saved values, guarded by an exact match on the stale declaration, and runs
-inside the shared startup repair pass in `src/providers/model-rename-startup.ts`. Correcting the
-registry alone fixes new installs only.
+repairs exactly those two saved values and runs inside the shared startup repair pass in
+`src/providers/model-rename-startup.ts`. Correcting the registry alone fixes new installs only.
+
+It covers both states that reach a running process, because the sidecar predicate reads
+`noVisionModels` before `modelInputModalities`: the full stale pair (modalities still the stale
+declaration and the id listed, both rewritten) and the half-repaired row (modalities already
+corrected but the id still listed, where removing the name is what stops the image from being
+stripped). The paired modality declaration is the guard in both cases, which is why a name listed
+without one is left alone — that row is either a half-finished repair or a deliberate operator
+entry, and the projection does not guess which. `modelCapabilities` is never written: it is the
+axis that outranks every source here, so it is where a deliberate text-only override belongs
+(`ocx provider edit <provider> --model <id> --text-only` writes it) and the one declaration a
+restart cannot take back.
 
 The BigModel Coding Plan Responses preset uses the separately documented
 `https://open.bigmodel.cn/api/v1` transport and a static catalog. Its provider row

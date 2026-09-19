@@ -9,9 +9,25 @@
  * - `modelInputModalities` is filled per-key BENEATH the saved value, so a saved `["text"]` for
  *   one id survives every later registry correction.
  *
- * Correcting the registry therefore fixes new installs only. This projection is the other half:
- * it rewrites the two saved values that are still byte-for-byte the stale declaration this file
- * names. A row the operator edited to something else does not match and is left alone.
+ * Correcting the registry therefore fixes new installs only. This projection is the other half.
+ * It repairs the two saved values a stale seed left behind, in both states that reach a running
+ * process:
+ *
+ * - the full pair: modalities still exactly the stale declaration, and the id in the list. Both
+ *   are rewritten.
+ * - the half-repaired row: modalities already corrected but the id still in the list. The
+ *   sidecar predicate reads `noVisionModels` BEFORE the modality list, so that row keeps
+ *   stripping images until the name goes as well; this projection removes it and leaves the
+ *   modalities untouched.
+ *
+ * The paired modalities value is the guard in both states, which is also why it has to be
+ * readable: a name in the list with no modality declaration beside it is ambiguous — either a
+ * half-finished repair or an entry the operator added on purpose — and this projection does not
+ * guess which. It leaves that row alone.
+ *
+ * Nothing here writes `modelCapabilities`. That is the dedicated per-model axis, it outranks
+ * every source this file touches, and it is where a deliberate text-only override belongs
+ * (`ocx provider edit <provider> --model <id> --text-only` writes it).
  *
  * Scope is deliberately one entry. The Go gateway's `deepseek-v4.1-flash` was declared text-only
  * from jawcode metadata and was measured natively multimodal on 2026-09-19 (see the note at that
@@ -69,26 +85,35 @@ export function projectStaleVisionClassifications(
     const prov = config.providers?.[entry.provider];
     if (!prov) continue;
     if (!providerStillMatchesRegistry(entry.provider, prov.adapter)) continue;
-    // The stale modalities value is the guard. A provider whose row no longer carries exactly
-    // that declaration was either already corrected or edited by the operator, and either way
-    // this migration has no business rewriting it.
     const modalities = prov.modelInputModalities;
-    if (!modalities || !sameModalities(modalities[entry.model], entry.fromModalities)) continue;
-    modalities[entry.model] = [...entry.toModalities];
-    // The list is the other half of the same stale claim: with the entry left in place the
-    // sidecar predicate would still short-circuit to text-only before reading the modalities.
-    if (Array.isArray(prov.noVisionModels) && prov.noVisionModels.includes(entry.model)) {
-      prov.noVisionModels = prov.noVisionModels.filter(id => id !== entry.model);
+    if (!modalities) continue;
+    // The paired modalities value is the guard, and it decides which of the two states above this
+    // row is in. Anything else is a declaration this file does not own.
+    const saved = modalities[entry.model];
+    const stale = sameModalities(saved, entry.fromModalities);
+    const alreadyMigrated = sameModalities(saved, entry.toModalities);
+    if (!stale && !alreadyMigrated) continue;
+    const visionList = Array.isArray(prov.noVisionModels) ? prov.noVisionModels : undefined;
+    const listed = visionList !== undefined && visionList.includes(entry.model);
+    // Half-repaired rows have nothing left to do once the name is gone; the full pair is rewritten
+    // whether or not the name was ever listed, because `derive.ts` fills the two fields
+    // independently and a per-key modality fill can land without the all-or-nothing list.
+    if (!stale && !listed) continue;
+    if (stale) modalities[entry.model] = [...entry.toModalities];
+    if (visionList !== undefined && listed) {
+      prov.noVisionModels = visionList.filter(id => id !== entry.model);
     }
-    const list = repaired.get(entry.provider) ?? [];
-    list.push(`${entry.model} ${entry.fromModalities.join("+")} -> ${entry.toModalities.join("+")}`);
-    repaired.set(entry.provider, list);
+    const repairedList = repaired.get(entry.provider) ?? [];
+    repairedList.push(stale
+      ? `${entry.model} ${entry.fromModalities.join("+")} -> ${entry.toModalities.join("+")}`
+      : `${entry.model} dropped from noVisionModels (modalities already ${entry.toModalities.join("+")})`);
+    repaired.set(entry.provider, repairedList);
   }
 
   for (const [provider, list] of repaired) {
     warnings.push(
-      `reclassified ${list.length} model(s) on "${provider}" that the saved config inherited `
-      + `from a stale registry vision seed: ${list.join(", ")}.`,
+      `repaired the stale registry vision seed for ${list.length} model(s) on "${provider}": `
+      + `${list.join(", ")}.`,
     );
   }
 

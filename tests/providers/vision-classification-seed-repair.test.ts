@@ -61,14 +61,39 @@ describe("stale vision classification migration", () => {
     expect(projection.config.providers!["opencode-go"]!.modelInputModalities![MODEL]).toEqual(["text", "audio"]);
   });
 
-  test("does not touch the list when the modalities were already corrected", () => {
-    // Partial repair: a config whose modalities are right but whose list still names the model
-    // must not be rewritten, because the exact-match guard is what keeps this migration honest.
+  test("finishes a half-repaired row whose name is still listed", () => {
+    // The sidecar predicate reads noVisionModels BEFORE the modality list, so a row whose
+    // modalities were already corrected but whose name is still listed keeps stripping images.
+    // Leaving it alone was the gap the maintainer review found on #5164.
     const projection = projectStaleVisionClassifications(
       staleConfig({ [MODEL]: ["text", "image"], [SIBLING]: ["text"] }),
     );
+    expect(projection.changed).toBe(true);
+    expect(projection.config.providers!["opencode-go"]!.modelInputModalities![MODEL]).toEqual(["text", "image"]);
+    expect(projection.config.providers!["opencode-go"]!.noVisionModels).not.toContain(MODEL);
+    // The sibling keeps both halves: its modalities are not the migrated value, so nothing fires.
+    expect(projection.config.providers!["opencode-go"]!.noVisionModels).toContain(SIBLING);
+    expect(projection.warnings.join(" ")).toContain("dropped from noVisionModels");
+  });
+
+  test("leaves a listed name without a readable modality declaration alone", () => {
+    // Ambiguous on purpose: a half-finished repair and an entry the operator added by hand look
+    // identical without the paired value, so the projection does not guess. Flagged to the
+    // maintainer as an open question rather than decided here.
+    const config = staleConfig({ [SIBLING]: ["text"] });
+    const projection = projectStaleVisionClassifications(config);
     expect(projection.changed).toBe(false);
     expect(projection.config.providers!["opencode-go"]!.noVisionModels).toContain(MODEL);
+  });
+
+  test("never writes the dedicated modelCapabilities axis", () => {
+    // `modelCapabilities` outranks every source this projection touches, so it is where a
+    // deliberate text-only override survives a restart. A repair that also rewrote it would make
+    // the operator's own `--text-only` decision unrecoverable.
+    const config = staleConfig();
+    config.providers!["opencode-go"]!.modelCapabilities = { [MODEL]: { inputModalities: ["text"] } };
+    const projection = projectStaleVisionClassifications(config);
+    expect(projection.config.providers!["opencode-go"]!.modelCapabilities![MODEL]!.inputModalities).toEqual(["text"]);
   });
 
   test("skips a row that no longer carries the registry adapter", () => {
