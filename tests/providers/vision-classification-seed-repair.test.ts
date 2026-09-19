@@ -13,6 +13,7 @@ import {
   STALE_VISION_CLASSIFICATIONS,
 } from "../../src/providers/stale-vision-classification-migration";
 import { PROVIDER_REGISTRY } from "../../src/providers/registry";
+import { requiresVisionPreprocessing } from "../../src/vision/plan";
 import type { OcxConfig } from "../../src/types";
 
 const MODEL = "deepseek-v4.1-flash";
@@ -95,6 +96,13 @@ describe("stale vision classification migration", () => {
     config.providers!["opencode-go"]!.modelCapabilities = { [MODEL]: { inputModalities: ["text"] } };
     const projection = projectStaleVisionClassifications(config);
     expect(projection.config.providers!["opencode-go"]!.modelCapabilities![MODEL]!.inputModalities).toEqual(["text"]);
+    // The axis only matters because it is read FIRST on the request path: the repair rewrites the
+    // modality list and drops the name from `noVisionModels` around it, and the operator's
+    // declaration still routes the image through the vision sidecar rather than to the model.
+    const row = projection.config.providers!["opencode-go"]!;
+    expect(row.modelInputModalities![MODEL]).toEqual(["text", "image"]);
+    expect(row.noVisionModels ?? []).not.toContain(MODEL);
+    expect(requiresVisionPreprocessing({ providers: { "opencode-go": row } }, row, MODEL, "opencode-go")).toBe(true);
   });
 
   test("skips a row that no longer carries the registry adapter", () => {
