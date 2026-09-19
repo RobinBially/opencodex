@@ -97,6 +97,21 @@ describe("custom row outranks provider vision hints", () => {
     expect(modelAcceptsImageInput(config, { provider: PROVIDER, id: MODEL })).toBe(false);
   });
 
+  test("the shared consumer predicate reads modelCapabilities ahead of the custom row", () => {
+    // The precedence is one contract, not one per predicate: a reader that consults the custom
+    // row first would answer the opposite of `modelAcceptsImageInput` for the same config.
+    const config = configWith([imageRow]);
+    config.providers[PROVIDER]!.modelCapabilities = { [MODEL]: { inputModalities: ["text"] } };
+    expect(isVisionSidecarConsumer(config, PROVIDER, MODEL)).toBe(true);
+  });
+
+  test("an explicit custom row outranks a noVisionModels listing on a native candidate", () => {
+    // The native arm used to check the sidecar hints before the custom row, so a listing the
+    // catalog had already overridden still forced text-only on the request path.
+    const config = configWith([imageRow]);
+    expect(modelAcceptsImageInput(config, { provider: PROVIDER, id: MODEL, native: true })).toBe(true);
+  });
+
   test("a custom row for a different provider or model id does not leak", () => {
     const otherProvider = configWith([{ ...imageRow, provider: "other-provider" }]);
     expect(requiresVisionPreprocessing(otherProvider, otherProvider.providers[PROVIDER]!, MODEL, PROVIDER)).toBe(true);

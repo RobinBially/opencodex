@@ -205,6 +205,14 @@ function isVisionSidecarConsumerWithCache(
 ): boolean {
   const provider = enrichedProviderForVision(config, providerName, cache);
   if (provider === undefined) return false;
+  // Documented precedence, highest first: the dedicated per-model capability axis, then the
+  // operator's own custom row, then the provider-level hints. Reading the custom row ahead of
+  // `modelCapabilities` would let it override the more specific axis.
+  const capabilityDeclared = Object.hasOwn(provider.modelCapabilities ?? {}, modelId)
+    ? provider.modelCapabilities?.[modelId]?.inputModalities : undefined;
+  if (capabilityDeclared !== undefined) {
+    return capabilityDeclared.includes("text") && !capabilityDeclared.includes("image");
+  }
   const customDeclared = customRowInputModalities(config, providerName, modelId);
   if (customDeclared !== undefined) return customDeclared.includes("text") && !customDeclared.includes("image");
   return isModelVisionSidecarConsumer(provider, modelId);
@@ -237,7 +245,6 @@ function modelAcceptsImageInputWithCache(
 ): boolean | undefined {
   if (candidate.native === true || (candidate.provider === "openai" && SUPPORTED_NATIVE_OPENAI_SLUGS.has(candidate.id))) {
     const nativeProvider = enrichedProviderForVision(config, candidate.provider, cache);
-    if (nativeProvider && isModelVisionSidecarConsumer(nativeProvider, candidate.id)) return false;
     const declared = Object.hasOwn(nativeProvider?.modelCapabilities ?? {}, candidate.id)
       ? nativeProvider?.modelCapabilities?.[candidate.id]?.inputModalities : undefined;
     if (declared !== undefined) return declared.includes("image");
@@ -245,6 +252,10 @@ function modelAcceptsImageInputWithCache(
     // same slug; consult it here too or the row would advertise what the request path ignores.
     const fromCustomRow = customRowAcceptsImageInput(config, candidate.provider, candidate.id);
     if (fromCustomRow !== undefined) return fromCustomRow;
+    // The sidecar hints come after both explicit declarations, matching the documented order.
+    // Ahead of them a `noVisionModels` membership would short-circuit to text-only before the
+    // operator's own row was read.
+    if (nativeProvider && isModelVisionSidecarConsumer(nativeProvider, candidate.id)) return false;
     return advertisesImageInput(nativeInputModalities(candidate.id)) ?? true;
   }
   if (isVisionSidecarConsumerWithCache(config, candidate.provider, candidate.id, cache)) return false;
