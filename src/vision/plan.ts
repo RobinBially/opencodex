@@ -5,7 +5,11 @@ import type { ResolvedOpenAiForwardSidecar } from "../providers/openai-sidecar";
 import type { CodexAuthPolicyConfig } from "../codex/auth-context";
 import { isCodexReserveRequestEligible } from "../codex/loopback-target";
 import type { DataPlaneAdmission } from "../server/auth-cors";
-import { isModelVisionSidecarConsumer as isModelTextOnly, modelAcceptsImageInput } from "./eligibility";
+import {
+  customRowInputModalities,
+  isModelVisionSidecarConsumer as isModelTextOnly,
+  modelAcceptsImageInput,
+} from "./eligibility";
 import { normalizeVisionReasoningForModel } from "./reasoning";
 import { resolveSidecarAuth } from "../sidecar/auth";
 import { DEFAULT_VISION_TIMEOUT_MS, MAX_VISION_TIMEOUT_MS, MIN_VISION_TIMEOUT_MS } from "./timeout-bounds";
@@ -95,23 +99,35 @@ function messagesHaveImage(parsed: OcxParsedRequest): boolean {
 /**
  * Direct-image admission for a routed target. Returns true when capability evidence proves the
  * target cannot accept image input, so the caller must describe or strip the image first.
- * Explicit text-only config, an explicit per-model modality list without `image`, and
- * proven-negative registry/vendor metadata each require the vision preprocessor. A genuinely
- * unknown custom model is NOT guessed blind: it keeps the established pass-through behaviour.
- * The provider-only fallback keeps legacy unit callers stable; production dispatch always
- * supplies providerName so the complete capability chain is consulted.
+ * Evidence is consulted highest-first: `modelCapabilities` (the dedicated per-model capability
+ * axis), an explicit custom row for the same routed identity, `noVisionModels`, an explicit
+ * per-model modality list without `image`, and finally proven-negative registry/vendor metadata.
+ * Any of them can require the vision preprocessor. A genuinely unknown custom model is NOT
+ * guessed blind: it keeps the established pass-through behaviour. The provider-only fallback
+ * keeps legacy unit callers stable; production dispatch always supplies providerName so the
+ * complete capability chain is consulted.
  */
 export function requiresVisionPreprocessing(
-  config: Pick<OcxConfig, "providers">,
+  config: Pick<OcxConfig, "providers"> & { customModels?: OcxConfig["customModels"] },
   provider: Pick<OcxProviderConfig, "noVisionModels" | "modelInputModalities" | "modelCapabilities">,
   modelId: string,
   providerName?: string,
 ): boolean {
-  if (isModelTextOnly(provider, modelId)) return true;
   const runtimeDeclared = Object.hasOwn(provider.modelCapabilities ?? {}, modelId)
     ? provider.modelCapabilities?.[modelId]?.inputModalities
     : undefined;
+  // `modelCapabilities` is the dedicated per-model capability axis, so it outranks everything
+  // below — including an explicit custom row that disagrees. The CLI `--text-only` flag writes it.
   if (runtimeDeclared !== undefined) return !runtimeDeclared.includes("image");
+  // An explicit custom row outranks the provider-level hints below, mirroring the catalog overlay
+  // in `src/codex/catalog/routed-gather.ts` that already copies this same declaration onto the
+  // advertised row. Without it the dashboard advertised "text, image" from the operator's own row
+  // while this predicate stripped the image before dispatch.
+  const customDeclared = providerName === undefined
+    ? undefined
+    : customRowInputModalities(config, providerName, modelId);
+  if (customDeclared !== undefined) return customDeclared.includes("text") && !customDeclared.includes("image");
+  if (isModelTextOnly(provider, modelId)) return true;
   const runtimeModalities = modelRecordValue(provider.modelInputModalities, modelId);
   if (Array.isArray(runtimeModalities) && runtimeModalities.length > 0) {
     return !runtimeModalities.includes("image");
