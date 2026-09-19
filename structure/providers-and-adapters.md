@@ -66,7 +66,22 @@ operator-supplied User-Agent authoritative.
 The same registry declares the first-party `deepseek-flash` model with `text` and `image` input,
 so it bypasses the vision sidecar by default; explicit `noVisionModels` or text-only declarations
 remain authoritative. First-party `deepseek-chat`, `deepseek-reasoner`, and `deepseek-v4-flash`
-remain sidecar-backed by default. Zen routes are unchanged and unprobed in this update.
+remain sidecar-backed by default.
+
+OpenCode Go's `deepseek-v4.1-flash` joined them on 2026-09-19: probed against
+`https://opencode.ai/zen/go/v1/chat/completions` with this proxy's headers, the route accepts an
+`image_url` part and the model reads it, so it left `noVisionModels` and gained a positive
+`modelInputModalities` declaration. Its sibling `deepseek-v4-flash` on the same gateway still
+answers HTTP 400 "Model only supports text input" and stays sidecar-backed. The Zen tiers
+(`opencode-zen`, `opencode-free`) were not measurable (HTTP 402) and keep their existing
+classification — an unverified tier is not evidence.
+
+Because `enrichProviderFromRegistry` fills `noVisionModels` all-or-nothing and fills
+`modelInputModalities` per-key beneath the saved value, both halves of a stale classification are
+frozen into any config saved while it was current. `src/providers/stale-vision-classification-migration.ts`
+rewrites exactly those two saved values, guarded by an exact match on the stale declaration, and runs
+inside the shared startup repair pass in `src/providers/model-rename-startup.ts`. Correcting the
+registry alone fixes new installs only.
 
 The BigModel Coding Plan Responses preset uses the separately documented
 `https://open.bigmodel.cn/api/v1` transport and a static catalog. Its provider row

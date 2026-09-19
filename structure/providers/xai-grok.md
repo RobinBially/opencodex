@@ -134,6 +134,9 @@ The first-party DeepSeek `deepseek-flash` native `text`/`image` declaration is l
 the DeepSeek provider and does not alter xAI metadata or transport behavior; explicit capability
 overrides remain authoritative. First-party `deepseek-chat`, `deepseek-reasoner`, and
 `deepseek-v4-flash` remain sidecar-backed by default. Zen routes are unchanged and unprobed here.
+OpenCode Go's `deepseek-v4.1-flash` was reclassified as native vision on 2026-09-19 (probed on
+that gateway); its sibling `deepseek-v4-flash` stays sidecar-backed, and the Zen tiers keep their
+classification because they could not be measured. None of this alters xAI metadata or routing.
 The Crusoe fixed-key registry row, discovery predicate, effort ladder, and input-modality map are
 also provider-scoped and do not alter xAI model metadata, OAuth routing, or wire behavior.
 
