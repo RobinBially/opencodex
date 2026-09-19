@@ -18,7 +18,8 @@ import {
   isVisionSidecarConsumer,
   modelAcceptsImageInput,
 } from "../../src/vision/eligibility";
-import { requiresVisionPreprocessing } from "../../src/vision/plan";
+import { planVisionSidecar, requiresVisionPreprocessing } from "../../src/vision/plan";
+import { parseRequest } from "../../src/responses/parser";
 
 const PROVIDER = "zen-go";
 const MODEL = "deepseek-v4.1-flash";
@@ -86,6 +87,46 @@ describe("custom row outranks provider vision hints", () => {
     );
     expect(requiresVisionPreprocessing(config, config.providers[PROVIDER]!, MODEL, PROVIDER)).toBe(false);
     expect(modelAcceptsImageInput(config, { provider: PROVIDER, id: MODEL })).toBe(true);
+  });
+
+  test("an audio-only custom row is image-incapable in both predicates", () => {
+    // The declaration answers "can this model take an image", not "is it a text model". A row
+    // that lists only audio excludes image input exactly as `["text"]` does, so the wider
+    // `includes("text")` test this branch used to apply made the two predicates disagree and
+    // sent the attachment to a model that cannot read it.
+    const config = configWith([{ ...imageRow, inputModalities: ["audio"] }]);
+    expect(requiresVisionPreprocessing(config, config.providers[PROVIDER]!, MODEL, PROVIDER)).toBe(true);
+    expect(modelAcceptsImageInput(config, { provider: PROVIDER, id: MODEL })).toBe(false);
+  });
+
+  test("a custom row lets a provider-declared text-only model serve as the routed describer", () => {
+    // `usableRoutedVisionModel` used to AND a provider-only `isModelTextOnly` on top of
+    // `modelAcceptsImageInput`. That second check never saw a custom row, so a describer the
+    // operator had declared image-capable was refused for the very provider hint the row overrides.
+    const request = parseRequest({
+      model: "main/blind",
+      input: [{ type: "message", role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,aGVsbG8taW1hZ2U=" }] }],
+    });
+    const build = (customModels?: OcxConfig["customModels"]): OcxConfig => ({
+      port: 10100,
+      defaultProvider: "main",
+      providers: {
+        main: { adapter: "openai-chat", baseUrl: "https://main.test/v1", noVisionModels: ["blind"] },
+        [PROVIDER]: { ...provider },
+      },
+      visionSidecar: { enabled: true, backend: "routed", model: `${PROVIDER}/${MODEL}` },
+      ...(customModels ? { customModels } : {}),
+    } as OcxConfig);
+
+    const withRow = build([imageRow]);
+    const plan = planVisionSidecar(withRow, withRow.providers["main"]!, "blind", request, undefined, { providerName: "main" });
+    expect(plan?.backend).toBe("routed");
+    expect(plan?.routedModel).toBe(`${PROVIDER}/${MODEL}`);
+
+    // Without the row the provider hint stands, the describer is refused, and nothing else can
+    // describe the image on this config — so the whole plan is absent.
+    const withoutRow = build();
+    expect(planVisionSidecar(withoutRow, withoutRow.providers["main"]!, "blind", request, undefined, { providerName: "main" })).toBeUndefined();
   });
 
   test("modelCapabilities remains the top slot when it contradicts the custom row", () => {

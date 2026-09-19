@@ -484,11 +484,16 @@ An explicit custom row is the operator's own definition of one routed model, so 
 (`noVisionModels`, `modelInputModalities`) for that exact `provider`/`modelId` identity.
 `modelCapabilities` keeps the top slot as the dedicated capability axis, including for the
 `ocx provider edit --text-only` write. The catalog overlay in
-`src/codex/catalog/routed-gather.ts` and the request-path predicates in
-`src/vision/eligibility.ts` and `src/vision/plan.ts` read the same field through
-`customRowInputModalities`, so an advertised row and the dispatch decision can no longer
-disagree about one model. A custom row that declares no modalities stays silent rather than
-becoming a text-only claim.
+`src/codex/catalog/routed-gather.ts` copies that declaration onto the advertised row directly,
+and the request-path predicates in `src/vision/eligibility.ts` and `src/vision/plan.ts` read the
+same field through `customRowInputModalities`, so an advertised row and the dispatch decision can
+no longer disagree about one model. A custom row that declares no modalities stays silent rather
+than becoming a text-only claim.
+
+Every consumer that answers "can this model take an image" applies one rule to the declaration:
+image is absent from the list. A row declaring only `audio` or `video` therefore counts as
+image-incapable in both `requiresVisionPreprocessing` and `modelAcceptsImageInput`, rather than
+being treated as a text model by one and an image target by the other.
 
 ## Catalog auto-refresh
 

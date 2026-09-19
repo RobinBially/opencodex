@@ -126,7 +126,12 @@ export function requiresVisionPreprocessing(
   const customDeclared = providerName === undefined
     ? undefined
     : customRowInputModalities(config, providerName, modelId);
-  if (customDeclared !== undefined) return customDeclared.includes("text") && !customDeclared.includes("image");
+  // Same rule as the `modelCapabilities` branch above: the declaration answers "can this model
+  // take an image", not "is it a text model". A row that lists only `audio` or `video` excludes
+  // image input just as `["text"]` does, and `modelAcceptsImageInput` already answers "no image"
+  // for it; the narrower `includes("text")` test here made the two predicates disagree and sent
+  // the attachment to a model that cannot read it.
+  if (customDeclared !== undefined) return !customDeclared.includes("image");
   if (isModelTextOnly(provider, modelId)) return true;
   const runtimeModalities = modelRecordValue(provider.modelInputModalities, modelId);
   if (Array.isArray(runtimeModalities) && runtimeModalities.length > 0) {
@@ -145,9 +150,12 @@ function usableRoutedVisionModel(config: OcxConfig): string | undefined {
   if (!routedModel || sep <= 0) return undefined;
   const targetProvider = routedModel.slice(0, sep);
   const targetId = routedModel.slice(sep + 1);
-  const targetProviderConfig = config.providers?.[targetProvider];
+  // `modelAcceptsImageInput` is the one predicate here: it resolves the whole capability chain,
+  // custom row included. The provider-only `isModelTextOnly` that used to be ANDed in could only
+  // subtract — it never saw a custom row, so a describer the operator had declared image-capable
+  // was refused for a provider hint that same row overrides.
   return modelAcceptsImageInput(config, { provider: targetProvider, id: targetId }) !== false
-    && !(targetProviderConfig && isModelTextOnly(targetProviderConfig, targetId)) ? routedModel : undefined;
+    ? routedModel : undefined;
 }
 
 export function shouldResolveOpenAiVisionSidecar(
