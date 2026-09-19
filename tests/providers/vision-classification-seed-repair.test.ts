@@ -23,10 +23,11 @@ function staleConfig(
   modalities: Record<string, string[]> = { [MODEL]: ["text"], [SIBLING]: ["text"] },
   noVisionModels: string[] = [MODEL, SIBLING],
   adapter = "openai-chat",
+  baseUrl = "https://opencode.ai/zen/go/v1",
 ): OcxConfig {
   return {
     providers: {
-      "opencode-go": { adapter, baseUrl: "https://opencode.ai/zen/go/v1", modelInputModalities: { ...modalities }, noVisionModels: [...noVisionModels] },
+      "opencode-go": { adapter, baseUrl, modelInputModalities: { ...modalities }, noVisionModels: [...noVisionModels] },
     },
   } as unknown as OcxConfig;
 }
@@ -99,6 +100,34 @@ describe("stale vision classification migration", () => {
   test("skips a row that no longer carries the registry adapter", () => {
     const projection = projectStaleVisionClassifications(staleConfig(undefined, undefined, "anthropic"));
     expect(projection.changed).toBe(false);
+  });
+
+  test("follows the registry's destination rule where a preset opts into it", () => {
+    // baseten is a key preset with preserveCustomDestination, so the registry owns a same-named row
+    // only while it still points at the registry destination — the rule enrichProviderFromRegistry
+    // applies before it writes registry metadata. Claiming such a row by name alone would rewrite
+    // capability for an endpoint the registry does not describe.
+    const entry = { provider: "baseten", model: MODEL, fromModalities: ["text"], toModalities: ["text", "image"] };
+    const atRegistry = {
+      adapter: "openai-chat",
+      baseUrl: "https://inference.baseten.co/v1",
+      modelInputModalities: { [MODEL]: ["text"] },
+      noVisionModels: [MODEL],
+    };
+    const atOwnHost = { ...atRegistry, baseUrl: "https://operator-gateway.example/v1" };
+    const config = (row: typeof atRegistry): OcxConfig => ({ providers: { baseten: row } } as unknown as OcxConfig);
+    expect(projectStaleVisionClassifications(config(atRegistry), [entry]).changed).toBe(true);
+    expect(projectStaleVisionClassifications(config(atOwnHost), [entry]).changed).toBe(false);
+  });
+
+  test("still repairs a pinned preset row at any destination", () => {
+    // opencode-go is an existing key preset without preserveCustomDestination: the registry claims
+    // that id itself, and enrichment fills its seed into such a row for the same reason. The
+    // projection follows that policy instead of inventing a narrower one of its own.
+    const projection = projectStaleVisionClassifications(
+      staleConfig(undefined, undefined, "openai-chat", "https://operator-gateway.example/v1"),
+    );
+    expect(projection.changed).toBe(true);
   });
 
   test("is a no-op on a config without the provider", () => {

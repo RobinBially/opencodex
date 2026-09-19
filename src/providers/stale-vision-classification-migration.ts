@@ -25,6 +25,13 @@
  * half-finished repair or an entry the operator added on purpose — and this projection does not
  * guess which. It leaves that row alone.
  *
+ * Identity is the same rule enrichment uses, read from the same helper: the registry must still
+ * own the row (`providerMatchesRegistryTransport`, the check `enrichProviderFromRegistry` makes
+ * before it writes registry metadata) and the row must still be on the entry's adapter.
+ * `opencode-go` is an existing key preset without `preserveCustomDestination`, so the id alone
+ * claims a row — exactly as it does for enrichment — while an entry that opts into destination
+ * preservation narrows this projection for free.
+ *
  * Nothing here writes `modelCapabilities`. That is the dedicated per-model axis, it outranks
  * every source this file touches, and it is where a deliberate text-only override belongs
  * (`ocx provider edit <provider> --model <id> --text-only` writes it).
@@ -35,7 +42,7 @@
  * upstream, and the sibling Zen tiers (`opencode-zen`, `opencode-free`) could not be probed at
  * all — an unverified tier is not evidence, so neither is touched here.
  */
-import { PROVIDER_REGISTRY } from "./registry";
+import { PROVIDER_REGISTRY, providerMatchesRegistryTransport } from "./registry";
 import type { OcxConfig } from "../types";
 
 export interface StaleVisionClassification {
@@ -62,9 +69,18 @@ export const STALE_VISION_CLASSIFICATIONS: readonly StaleVisionClassification[] 
   },
 ];
 
-function providerStillMatchesRegistry(id: string, adapter: unknown): boolean {
+/**
+ * Whether the registry still owns the row whose saved values would be rewritten.
+ *
+ * `providerMatchesRegistryTransport` is the rule enrichment applies, so this projection and the
+ * fill that put the stale values there answer identity the same way. Adapter equality stays as
+ * an additional tightening: a row moved onto another wire is not the row the seed described,
+ * however the registry entry is pinned.
+ */
+function providerStillMatchesRegistry(id: string, prov: OcxConfig["providers"][string]): boolean {
   const entry = PROVIDER_REGISTRY.find(row => row.id === id);
-  return entry !== undefined && entry.adapter === adapter;
+  if (entry === undefined || entry.adapter !== prov.adapter) return false;
+  return providerMatchesRegistryTransport(id, prov);
 }
 
 function sameModalities(current: unknown, expected: readonly string[]): boolean {
@@ -84,7 +100,7 @@ export function projectStaleVisionClassifications(
   for (const entry of entries) {
     const prov = config.providers?.[entry.provider];
     if (!prov) continue;
-    if (!providerStillMatchesRegistry(entry.provider, prov.adapter)) continue;
+    if (!providerStillMatchesRegistry(entry.provider, prov)) continue;
     const modalities = prov.modelInputModalities;
     if (!modalities) continue;
     // The paired modalities value is the guard, and it decides which of the two states above this

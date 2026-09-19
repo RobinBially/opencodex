@@ -88,7 +88,12 @@ declaration and the id listed, both rewritten) and the half-repaired row (modali
 corrected but the id still listed, where removing the name is what stops the image from being
 stripped). The paired modality declaration is the guard in both cases, which is why a name listed
 without one is left alone — that row is either a half-finished repair or a deliberate operator
-entry, and the projection does not guess which. `modelCapabilities` is never written: it is the
+entry, and the projection does not guess which. The row must also still be the registry's own:
+identity resolves through `providerMatchesRegistryTransport`, the rule `enrichProviderFromRegistry`
+applies before it writes registry metadata, plus the entry's adapter. `opencode-go` is a pinned
+key preset without `preserveCustomDestination`, so its id alone claims a row — exactly as it does
+for enrichment — and an entry that opts into destination preservation narrows the projection with
+it. `modelCapabilities` is never written: it is the
 axis that outranks every source here, so it is where a deliberate text-only override belongs
 (`ocx provider edit <provider> --model <id> --text-only` writes it) and the one declaration a
 restart cannot take back.
