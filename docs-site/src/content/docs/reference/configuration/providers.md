@@ -1137,6 +1137,10 @@ the same precedence the catalog already applied, so the advertised row and the r
 `modelCapabilities` stays above it, because that is the dedicated per-model capability axis —
 including the write made by `ocx provider edit <provider> --model <id> --text-only`. A custom row
 that leaves the modalities blank inherits the provider row instead of claiming text-only.
+Every consumer that answers "can this model take an image" applies one rule to the declaration:
+image is absent from the list. A row declaring only `audio` or `video` therefore counts as
+image-incapable, rather than being treated as a text model by one predicate and an image target
+by the other.
 
 ### Renamed API-key presets
 
