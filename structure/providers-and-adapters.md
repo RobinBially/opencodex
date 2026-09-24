@@ -34,6 +34,24 @@ the [bounded ingestion contract](transports/inventory.md#bounded-response-ingest
 Anthropic model-scoped quota labels in `src/providers/quota/vendor-probes-oauth.ts` publish
 only canonical Fable, Opus, or Sonnet labels after removing terminal controls; unknown upstream display names are omitted.
 
+The routed identity sentence a catalog row carries is model-neutral on disk: `base_instructions`,
+and a native capability alias's `model_messages.instructions_template`, hold `NEUTRAL_IDENTITY_LINE`
+rather than a model id, because Codex stores a session's instruction block once and replays it
+verbatim into a sub-agent spawned on a DIFFERENT model, where a baked id makes the worker answer
+identity questions with the parent's id (#5217). The destination model is therefore named at request
+time, in two steps, because the parser reads the body before routing has run and can only name the
+id the CLIENT sent. `src/responses/parser.ts` names it in the top-level `instructions` string and in
+developer and system-role items; `applyFinalRouteRequestNormalization`
+(`src/server/responses/core-normalize.ts`) then settles that sentence on `route.modelId` through
+`renameRoutedIdentityInContext`, where the wire id is final and every dispatch path — passthrough,
+`runTurn`, and the adapter request build — still has to read the context. Adapters that build their
+own system text call `identifyRoutedModel` on top of that with their own wire id, so the ones that
+never call it are not the ones that leak a client selector upstream (#5221).
+The Responses passthrough rewrites the sentence on a routed destination and strips it on a native or
+forward one, where Codex's own identity wording already supplies it;
+`tests/adapters/identity-neutralize.test.ts` and `tests/adapters/identity-subagent.test.ts` pin the
+rewrite rules and the routed-id settlement.
+
 | Path | Responsibility |
 | --- | --- |
 | `src/providers/registry.ts` | Compatibility facade; canonical provider presets for CLI, dashboard, OAuth, key providers, and metadata live in `src/providers/registry/entries-core.ts` and `entries-extended.ts`, with model seeds in `model-seeds.ts`. |
@@ -55,7 +73,7 @@ only canonical Fable, Opus, or Sonnet labels after removing terminal controls; u
 | `src/adapters/devin.ts`, `src/adapters/devin/cloud-direct/` | Devin runTurn transport over Cognition Connect-RPC. `GetChatMessage` uses the Responses provider executor and shared physical-send budget; catalog and JWT support RPCs remain outside inference-send accounting. Provider-stated 429 reset delays are surfaced to the client rather than slept inside an admitted turn, so they cannot retain shared active-turn capacity. A recorded tenant host is used only for the stored account whose credential owns the transmitted key, searched in the configured provider id and then its deprecated alias; a configured, forwarded, or unmatched key uses the configured base URL or the US default. |
 | `src/adapters/kiro.ts` and `src/adapters/kiro/` | Kiro event/tool/thinking/truncation/retry handling. The original path is a facade over leaves for wire identity, reasoning, conversation state, token estimation, payload assembly, streaming, and the adapter. |
 | `src/adapters/mimo-free.ts` | Mimo Free transport (client identity + JWT). Concurrent requests share one JWT bootstrap bound only to its timeout; each request stops waiting on its own abort without cancelling the others. |
-| `src/adapters/command-code.ts`, `src/adapters/command-code-tool-text.ts`, `src/adapters/command-code-restored-schema.ts` | Command Code OAuth NDJSON translation. For every `xiaomi/mimo-` model, text, native calls, reasoning, and terminal decisions share one byte-bounded queue with linear queue visits. Markup is deduplicated against matching native calls; text-only restoration requires one contiguous text run, a clean finish, a declared tool, and arguments validated against supported schema constraints. A parameter-free (freeform) block may omit `</function>` but must end with `</tool_call>`; parameter blocks keep the canonical close. Native, reasoning, and other intervening events release an open markup block as text. Regex patterns, other unsupported constraints, and abnormal finishes fail closed. |
+| `src/adapters/command-code.ts`, `src/adapters/command-code-tool-text.ts`, `src/adapters/command-code-restored-schema.ts` | Command Code OAuth NDJSON translation. For every `xiaomi/mimo-` model, text, native calls, reasoning, and terminal decisions share one byte-bounded queue with linear queue visits. Markup is deduplicated against matching native calls; text-only restoration requires one contiguous text run, a clean finish, a declared tool, and arguments validated against supported schema constraints. A parameter-free (freeform) block may omit `</function>` but must end with `</tool_call>`; parameter blocks keep the canonical close. Markup appended after prose in the same delta is split off at the marker and held like a block that opens with `<tool_call>`; a marker split across deltas after prose is still released as text. Native, reasoning, and other intervening events interrupt a still-probing block but leave a held block held in arrival order, and the queued byte bound still flushes an unresolved envelope as text. An envelope the strict parser rejects but that opens with `<tool_call>`, closes with `</tool_call>`, and names a declared function is dropped when a native call for that same function arrives and on a clean finish; markup that parses but fits no supported schema is still released as text. Regex patterns, other unsupported constraints, and abnormal finishes fail closed. `tests/providers/command-code-tool-text-prose-split.test.ts` covers the split, the interleaved-event hold, and both drop paths. |
 | `src/adapters/image.ts`, `src/adapters/anthropic-image-guard.ts`, `src/adapters/anthropic-image-normalize.ts`, `src/adapters/anthropic-image-codec.ts` | Image conversion for adapter ingress and Anthropic-specific normalization/limits. An image's ladder position is pinned to its own identity (content hash + media type), so appending a newer image cannot re-encode older ones and bust Anthropic's prompt prefix cache (#4532). |
 | `src/adapters/run-turn-queue.ts`, `src/adapters/tool-catalog-nudge.ts`, `src/adapters/identity.ts`, `src/adapters/upstream-http-error.ts` | Shared adapter execution support: turn queueing, tool-catalog nudging, client identity, upstream error normalization. |
 

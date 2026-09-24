@@ -19,9 +19,13 @@ that cannot find its own startup state now reports that as a failure the user ca
 It uses no `alert`, `confirm` or `prompt`: the embedded webview implements
 none of the matching WKUIDelegate panel methods on macOS, so a platform dialog is declined without
 drawing anything.
-`withGlobalTauri` is on so that page can invoke without a bundler. Only the local app origin
-carries a capability, so the loopback dashboard reaches no command: `capabilities/default.json`
-declares no `remote` entry, and Tauri checks the ACL for any invoke from a non-local origin.
+`withGlobalTauri` is on so that page can invoke without a bundler. The bootstrap commands are
+granted to the local app origin only: `capabilities/default.json` declares no `remote` entry, and
+Tauri checks the ACL for any invoke from a non-local origin. The one exception is page zoom. The main
+window enables Tauri's zoom hotkeys (Cmd or Ctrl with + / - / 0); WebView2 handles them natively, but
+on macOS and Linux Tauri injects a keydown polyfill that calls `set_webview_zoom` from whatever page
+is loaded, including the loopback dashboard. `capabilities/dashboard-zoom.json` grants that single
+command to the main window for `http://127.0.0.1:*`, and a test in `window.rs` pins its shape.
 
 ## Startup, quit and the tray
 
@@ -95,6 +99,25 @@ is the quit. macOS needs one thing beyond the event loop: Tauri's default menu c
 Quit wired to Cocoa's `terminate:` and the pinned tao raises no cancellable event for it, so
 `desktop/src-tauri/src/menu.rs` rebuilds that menu with an ordinary item on the same accelerator.
 
+On macOS, the event loop in `desktop/src-tauri/src/lib.rs` handles `RunEvent::Reopen` through the
+existing dashboard entry point. Opening the running app from Dock or Finder restores its main
+window, closes the usage popup if it is open, and loads the dashboard if a hidden launch deferred
+it. This is separate from the single-instance callback, which handles a second process notifying
+the existing one.
+
+The host window also answers whether the dashboard is visible at all. Windows WebView2 is reported
+to keep `document.visibilityState === "visible"` while the Tauri window sits hidden in the tray
+(tauri issues #10592 and #6864; macOS WKWebView does flip it, measured), so a hidden dashboard went
+on polling for nobody. `desktop/src-tauri/src/window.rs` therefore publishes the shell's own
+answer — the page global `window.__OPENCODEX_HOST_VISIBLE__` and an `opencodex:host-visibility`
+CustomEvent — from `show` and `hide`, with a label guard so only `main` reports while
+`exit::hide_windows` hides every window through the same `hide`; the main window's builder in
+`lib.rs` re-sends the current state on every `PageLoadEvent::Finished`, which covers a reload or
+the bootstrap page's later navigation to the dashboard URL. The GUI folds both the standard event
+and this one into a single predicate in `gui/src/host-visibility.ts`, which
+`gui/src/visibility-poll.ts` and `gui/src/client-resource.ts` read in place of
+`document.visibilityState`. The tray popup keeps its own equivalent bridge.
+
 Every ending drains first, and so does the tray's Stop, which is not an ending: all of them take the
 same phase, so Stop pressed twice, Stop then Quit, and Stop during an update are one execution over
 one child rather than several racing. Ownership is re-established at the start of each drain rather
@@ -129,6 +152,15 @@ pinned updater's Windows installer hands off to the installer process and ends t
 restart asked for after `install` is never reached, and the package would be replaced under a
 runtime still serving out of those files. A drain that did not complete refuses the install and
 leaves the update pending.
+
+The Tauri updater also publishes a bounded desktop snapshot over its identity-bound ProxyClient. A random process-session id travels in the embedded dashboard URL, and the dashboard requests GET /api/update/badge?surface=desktop&session=<id>. A normal browser keeps the package badge. The shell posts each updater-state change and a 60-second heartbeat; if the proxy loses the snapshot or the shell stops, the desktop badge becomes unknown after 180 seconds. This display path never installs an update or replaces the signed Tauri result. The tray shows the same pending state: macOS draws a blue child NSView dot over the template status-item image; Windows/Linux swap a generated dotted PNG when a tray host exists. The Windows base glyph is unchanged.
+
+The embedded dashboard sends both update entries to the bundled `desktop/ui/update.html`
+on the app origin. Its page is the only WebView route accepted by the four native update
+commands. Tray and page installation share one atomic claim before taking `PendingUpdate`;
+a failed download or drain restores that pending signed update and reenables retry. The
+page returns through the startup sequence's resolved dashboard URL, independently of the
+one-time initial navigation claim. The loopback dashboard has no updater IPC permission.
 
 The window may navigate to the `tauri://` scheme, to the loopback endpoint the sequence resolved,
 and on Windows to `tauri.localhost`, which is where the pinned Tauri serves the app itself because
