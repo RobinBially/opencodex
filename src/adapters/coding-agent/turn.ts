@@ -140,8 +140,8 @@ export interface CodingAgentToolBridgeInput {
   requireToolCall?: boolean;
 }
 
-export function codeBuddyMcpInvocation(serverModulePath: string, catalogPath: string, standalone = isStandaloneBinary()): string[] {
-  return standalone ? ["__codebuddy-mcp", catalogPath] : [serverModulePath, catalogPath];
+export function codingAgentMcpInvocation(serverModulePath: string, catalogPath: string, standalone = isStandaloneBinary()): string[] {
+  return standalone ? ["__coding-agent-mcp", catalogPath] : [serverModulePath, catalogPath];
 }
 
 /**
@@ -237,7 +237,7 @@ export async function runCodingAgentTurn(input: CodingAgentTurnInput): Promise<v
             [toolBridge.serverName]: {
               type: "stdio",
               command: process.execPath,
-              args: codeBuddyMcpInvocation(toolBridge.serverModulePath, catalogPath),
+              args: codingAgentMcpInvocation(toolBridge.serverModulePath, catalogPath),
               defer_loading: false,
               alwaysLoad: true,
             },
@@ -513,7 +513,7 @@ export async function runCodingAgentTurn(input: CodingAgentTurnInput): Promise<v
             // other bridge contract violations use.
             emitOnce({
               type: "error",
-              message: "CodeBuddy finished without calling the required tool.",
+              message: `${profile.label} finished without calling the required tool.`,
               status: 502,
               errorType: "upstream_error",
               code: "tool_call_required",

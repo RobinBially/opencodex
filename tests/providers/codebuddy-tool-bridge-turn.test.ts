@@ -7,7 +7,7 @@ import { basename, dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 import { createCodeBuddyAdapter, type SpawnFn } from "../../src/adapters/codebuddy/adapter";
-import { buildCodeBuddyToolBridge } from "../../src/adapters/codebuddy/tool-bridge";
+import { buildCodingAgentToolBridge } from "../../src/adapters/coding-agent/tool-bridge";
 import { CODEBUDDY_GLOBAL_PROFILE, clearCodeBuddyBinaryCache } from "../../src/adapters/codebuddy/profiles";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig, OcxTool } from "../../src/types";
 import { createTestTranslatorBudget } from "../helpers/translator-budget";
@@ -182,7 +182,7 @@ describe("CodeBuddy capture-only tool bridge turn", () => {
 
   test("advertises the catalog, captures the call, renames it, and ends the leg at message_stop", async () => {
     const p = parsed([tool("exec")]);
-    const bridge = buildCodeBuddyToolBridge(p);
+    const bridge = buildCodingAgentToolBridge(p);
     const cliName = [...bridge.emittedNameMap.keys()][0]!;
     const wireName = bridge.emittedNameMap.get(cliName)!;
 
@@ -243,7 +243,7 @@ describe("CodeBuddy capture-only tool bridge turn", () => {
 
   test("a tool-bridge turn reports the partial usage observed before message_stop", async () => {
     const p = parsed([tool("exec")]);
-    const bridge = buildCodeBuddyToolBridge(p);
+    const bridge = buildCodingAgentToolBridge(p);
     const cliName = [...bridge.emittedNameMap.keys()][0]!;
     const spawn: SpawnFn = (_cmd, _args) => fakeChild(frameLines([
       INIT_OK,
@@ -267,7 +267,7 @@ describe("CodeBuddy capture-only tool bridge turn", () => {
 
   test("a tool-bridge turn records input tokens from message_start", async () => {
     const p = parsed([tool("exec")]);
-    const bridge = buildCodeBuddyToolBridge(p);
+    const bridge = buildCodingAgentToolBridge(p);
     const cliName = [...bridge.emittedNameMap.keys()][0]!;
     const spawn: SpawnFn = (_cmd, _args) => fakeChild(frameLines([
       INIT_OK,
@@ -289,7 +289,7 @@ describe("CodeBuddy capture-only tool bridge turn", () => {
 
   test("message_stop with an incomplete tool call fails with protocol_error", async () => {
     const p = parsed([tool("exec")]);
-    const bridge = buildCodeBuddyToolBridge(p);
+    const bridge = buildCodingAgentToolBridge(p);
     const cliName = [...bridge.emittedNameMap.keys()][0]!;
     const spawn: SpawnFn = (_cmd, _args) => fakeChild(frameLines([
       INIT_OK,
@@ -311,7 +311,7 @@ describe("CodeBuddy capture-only tool bridge turn", () => {
 
   test("a terminal result with an incomplete tool call fails with protocol_error", async () => {
     const p = parsed([tool("exec")]);
-    const bridge = buildCodeBuddyToolBridge(p);
+    const bridge = buildCodingAgentToolBridge(p);
     const cliName = [...bridge.emittedNameMap.keys()][0]!;
     const spawn: SpawnFn = (_cmd, _args) => fakeChild(frameLines([
       INIT_OK,
@@ -335,7 +335,7 @@ describe("CodeBuddy capture-only tool bridge turn", () => {
 
   test("a tool call before the init frame fails closed with tool_bridge_init_missing", async () => {
     const p = parsed([tool("exec")]);
-    const bridge = buildCodeBuddyToolBridge(p);
+    const bridge = buildCodingAgentToolBridge(p);
     const cliName = [...bridge.emittedNameMap.keys()][0]!;
     const spawn: SpawnFn = (_cmd, _args) => fakeChild(frameLines([
       // A complete tool call arrives before the init frame: the bridge was never validated
@@ -361,7 +361,7 @@ describe("CodeBuddy capture-only tool bridge turn", () => {
 
   test("a result frame before message_stop defers to the synthesized tool_use done", async () => {
     const p = parsed([tool("exec")]);
-    const bridge = buildCodeBuddyToolBridge(p);
+    const bridge = buildCodingAgentToolBridge(p);
     const cliName = [...bridge.emittedNameMap.keys()][0]!;
     let child: FakeChild | undefined;
     const spawn: SpawnFn = (_cmd, _args) => {
@@ -400,7 +400,7 @@ describe("CodeBuddy capture-only tool bridge turn", () => {
 
   test("a deferred result without message_stop fails closed with protocol_error", async () => {
     const p = parsed([tool("exec")]);
-    const bridge = buildCodeBuddyToolBridge(p);
+    const bridge = buildCodingAgentToolBridge(p);
     const cliName = [...bridge.emittedNameMap.keys()][0]!;
     const spawn: SpawnFn = (_cmd, _args) => fakeChild(frameLines([
       INIT_OK,
@@ -461,7 +461,7 @@ describe("CodeBuddy capture-only tool bridge turn", () => {
 
   test("a complete assistant tool block without partial capture fails closed", async () => {
     const p = parsed([tool("exec")]);
-    const cliName = [...buildCodeBuddyToolBridge(p).emittedNameMap.keys()][0]!;
+    const cliName = [...buildCodingAgentToolBridge(p).emittedNameMap.keys()][0]!;
     const adapter = createCodeBuddyAdapter(provider(), {
       spawn: () => fakeChild(frameLines([
         INIT_OK,
@@ -478,7 +478,7 @@ describe("CodeBuddy capture-only tool bridge turn", () => {
 
   test("a complete assistant repeat of a captured partial tool does not duplicate it", async () => {
     const p = parsed([tool("exec")]);
-    const cliName = [...buildCodeBuddyToolBridge(p).emittedNameMap.keys()][0]!;
+    const cliName = [...buildCodingAgentToolBridge(p).emittedNameMap.keys()][0]!;
     const adapter = createCodeBuddyAdapter(provider(), {
       spawn: () => fakeChild(frameLines([
         INIT_OK,
@@ -497,7 +497,7 @@ describe("CodeBuddy capture-only tool bridge turn", () => {
 
   test("a mixed assistant fallback with an additional uncaptured tool fails closed", async () => {
     const p = parsed([tool("exec")]);
-    const cliName = [...buildCodeBuddyToolBridge(p).emittedNameMap.keys()][0]!;
+    const cliName = [...buildCodingAgentToolBridge(p).emittedNameMap.keys()][0]!;
     const adapter = createCodeBuddyAdapter(provider(), {
       spawn: () => fakeChild(frameLines([
         INIT_OK,
@@ -541,7 +541,7 @@ describe("CodeBuddy capture-only tool bridge turn", () => {
 
   test("a tool call that precedes the init handshake fails closed", async () => {
     const p = parsed([tool("exec")]);
-    const bridge = buildCodeBuddyToolBridge(p);
+    const bridge = buildCodingAgentToolBridge(p);
     const cliName = [...bridge.emittedNameMap.keys()][0]!;
     // The call arrives before system/init acknowledged the bridge server, then the handshake and a
     // clean stop follow. The later init frame must not retroactively legitimize the early call.
@@ -582,7 +582,7 @@ describe("CodeBuddy capture-only tool bridge turn", () => {
 
   test("more captured calls than the turn limit fails closed", async () => {
     const p = parsed([tool("exec")]);
-    const bridge = buildCodeBuddyToolBridge(p);
+    const bridge = buildCodingAgentToolBridge(p);
     const cliName = [...bridge.emittedNameMap.keys()][0]!;
     const frames: unknown[] = [INIT_OK];
     for (let i = 0; i < 17; i += 1) {

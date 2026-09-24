@@ -1,15 +1,28 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig } from "../../types";
 import type { AdapterRequest, ProviderAdapter } from "../base";
 import { mapReasoningEffort } from "../../reasoning-effort";
 import { buildSystemPrompt } from "../coding-agent/protocol";
-import { baseScopedEnv, runCodingAgentTurn, type CodingAgentDeps } from "../coding-agent/turn";
+import {
+  baseScopedEnv,
+  runCodingAgentTurn,
+  type CodingAgentDeps,
+} from "../coding-agent/turn";
+import {
+  buildCodingAgentToolBridge,
+  codingAgentToolBridgeInput,
+  CODING_AGENT_TOOL_BRIDGE_SYSTEM_PROMPT,
+  type CodingAgentToolBridge,
+} from "../coding-agent/tool-bridge";
 import { CLAUDE_CLI_PROFILES, type ClaudeCliProfile } from "./profiles";
 
 export type { SpawnFn } from "../coding-agent/turn";
 export type ClaudeCliAdapterDeps = CodingAgentDeps;
+
+const CLAUDE_CLI_MCP_SERVER_PATH = fileURLToPath(new URL("../coding-agent/mcp-server.ts", import.meta.url));
 
 /**
  * Quiet the CLI's own outbound traffic.
@@ -58,8 +71,11 @@ export function buildChildEnv(_profile: ClaudeCliProfile, _apiKey: string): Reco
  * Build the headless Claude Code arguments for one turn.
  *
  * Tool ownership stays with the client: `--tools ""` disables every built-in tool and
- * `--strict-mcp-config` (with no `--mcp-config`) keeps user, project and plugin MCP servers out, so
- * the harness can neither read, write, exec nor browse the operator's tree. `--setting-sources ""`
+ * `--strict-mcp-config` keeps user, project and plugin MCP servers out, so the harness can neither
+ * read, write, exec nor browse the operator's tree. A request that carries a tool catalog adds the
+ * capture-only bridge's own `--mcp-config` (with exact `--allowedTools` names) on top — that
+ * isolated server advertises the catalog and never answers a call, so the client still executes
+ * nothing (see `../coding-agent/tool-bridge.ts` / `../coding-agent/mcp-server.ts`). `--setting-sources ""`
  * stops the CLI from loading CLAUDE.md, skills, hooks, plugins and output styles into a proxied
  * turn, which is what makes the request deterministic instead of dependent on the host's setup.
  *
@@ -148,11 +164,13 @@ export function withClaudeLoginHint(emit: (event: AdapterEvent) => void): (event
 }
 
 /**
- * Create the Claude Code CLI adapter: one headless, tools-disabled, sessionless turn per request.
+ * Create the Claude Code CLI adapter: one headless, sessionless turn per request.
  *
  * As with CodeBuddy and Qoder, `runTurn` owns the turn and the HTTP path is disabled — the CLI
  * performs the transport, and OpenCodex contributes the request projection, the stream mapping and
- * the process lifecycle.
+ * the process lifecycle. Built-in tools stay disabled for every turn; a request that carries a
+ * tool catalog is served through the shared capture-only bridge, which advertises the catalog to
+ * the model and returns captured calls to the client, which keeps approval and execution.
  */
 export function createClaudeCliAdapter(provider: OcxProviderConfig, deps: ClaudeCliAdapterDeps = {}): ProviderAdapter {
   return {
@@ -177,16 +195,36 @@ export function createClaudeCliAdapter(provider: OcxProviderConfig, deps: Claude
         });
         return;
       }
+      let toolBridge: CodingAgentToolBridge;
+      try {
+        toolBridge = buildCodingAgentToolBridge(parsed);
+      } catch (err) {
+        emit({
+          type: "error",
+          message: `Invalid Claude Code tool catalog: ${err instanceof Error ? err.message : String(err)}`,
+          status: 400,
+          errorType: "invalid_request_error",
+          code: "tool_catalog_invalid",
+          retryable: false,
+        });
+        return;
+      }
+      const bridgeInput = codingAgentToolBridgeInput(toolBridge, CLAUDE_CLI_MCP_SERVER_PATH);
       // argv is world-readable via process listing, so the folded system+developer prompt is staged
       // in a private per-turn file and passed by path. The file is written even when the caller
       // sends no prompt at all: the flag has to be present either way, and an empty replacement is
-      // what keeps the harness preset out of the turn.
+      // what keeps the harness preset out of the turn. A catalog turn appends the bridge directive
+      // to the same file, so the model is told which tools it may propose and who executes them.
+      const system = buildSystemPrompt(parsed);
+      const systemParts: string[] = [];
+      if (system) systemParts.push(system);
+      if (toolBridge.tools.length > 0) systemParts.push(CODING_AGENT_TOOL_BRIDGE_SYSTEM_PROMPT);
       let promptDir: string | undefined;
       let promptFile: string | undefined;
       try {
         promptDir = await mkdtemp(join(tmpdir(), "ocx-claude-cli-prompt-"));
         promptFile = join(promptDir, "system-prompt.txt");
-        await writeFile(promptFile, buildSystemPrompt(parsed) ?? "", { encoding: "utf8", mode: 0o600, flag: "wx" });
+        await writeFile(promptFile, systemParts.join("\n\n"), { encoding: "utf8", mode: 0o600, flag: "wx" });
       } catch {
         if (promptDir) await rm(promptDir, { recursive: true, force: true }).catch(() => {});
         emit({
@@ -206,6 +244,7 @@ export function createClaudeCliAdapter(provider: OcxProviderConfig, deps: Claude
           parsed,
           incoming,
           emit: withClaudeLoginHint(emit),
+          ...(bridgeInput ? { toolBridge: bridgeInput } : {}),
           buildArgs: (profile, req, prov) => buildArgs(profile as ClaudeCliProfile, req, prov, promptFile),
           buildEnv: (profile, apiKey) => buildChildEnv(profile as ClaudeCliProfile, apiKey),
           deps,

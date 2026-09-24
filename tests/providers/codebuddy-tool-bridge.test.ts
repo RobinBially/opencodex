@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
-  CODEBUDDY_MCP_TOOL_PREFIX,
-  CODEBUDDY_TOOL_LIMITS,
-  buildCodeBuddyToolBridge,
-  codeBuddyToolAlias,
-} from "../../src/adapters/codebuddy/tool-bridge";
+  CODING_AGENT_MCP_TOOL_PREFIX,
+  CODING_AGENT_TOOL_LIMITS,
+  buildCodingAgentToolBridge,
+  codingAgentToolAlias,
+} from "../../src/adapters/coding-agent/tool-bridge";
 import type { OcxParsedRequest, OcxTool, OcxToolChoice } from "../../src/types";
 
 function tool(
@@ -32,13 +32,13 @@ function parsed(tools: OcxTool[], toolChoice?: OcxToolChoice): OcxParsedRequest 
 }
 
 function wireNames(request: OcxParsedRequest): string[] {
-  return [...buildCodeBuddyToolBridge(request).emittedNameMap.values()];
+  return [...buildCodingAgentToolBridge(request).emittedNameMap.values()];
 }
 
 function wireToAlias(request: OcxParsedRequest): Map<string, string> {
   return new Map(
-    [...buildCodeBuddyToolBridge(request).emittedNameMap]
-      .map(([emitted, wire]) => [wire, emitted.slice(CODEBUDDY_MCP_TOOL_PREFIX.length)]),
+    [...buildCodingAgentToolBridge(request).emittedNameMap]
+      .map(([emitted, wire]) => [wire, emitted.slice(CODING_AGENT_MCP_TOOL_PREFIX.length)]),
   );
 }
 
@@ -49,26 +49,26 @@ describe("CodeBuddy capture-only tool choice", () => {
   ];
 
   test("supports auto, none, and required", () => {
-    const automatic = buildCodeBuddyToolBridge(parsed(catalog, "auto"));
+    const automatic = buildCodingAgentToolBridge(parsed(catalog, "auto"));
     expect([...automatic.emittedNameMap.values()]).toEqual(["plain", "mcp__alpha__lookup"]);
     expect(automatic.requireToolCall).toBe(false);
 
-    const none = buildCodeBuddyToolBridge(parsed(catalog, "none"));
+    const none = buildCodingAgentToolBridge(parsed(catalog, "none"));
     expect(none.tools).toEqual([]);
     expect(none.emittedNameMap.size).toBe(0);
     expect(none.requireToolCall).toBe(false);
 
-    const required = buildCodeBuddyToolBridge(parsed(catalog, "required"));
+    const required = buildCodingAgentToolBridge(parsed(catalog, "required"));
     expect([...required.emittedNameMap.values()]).toEqual(["plain", "mcp__alpha__lookup"]);
     expect(required.requireToolCall).toBe(true);
   });
 
   test("applies none before validating an unadvertised oversized or malformed catalog", () => {
     const ignored = Array.from(
-      { length: CODEBUDDY_TOOL_LIMITS.maxTools + 1 },
+      { length: CODING_AGENT_TOOL_LIMITS.maxTools + 1 },
       (_, index) => tool(`ignored_${index}`, {
         description: index === 0
-          ? "d".repeat(CODEBUDDY_TOOL_LIMITS.maxDescriptionBytes + 1)
+          ? "d".repeat(CODING_AGENT_TOOL_LIMITS.maxDescriptionBytes + 1)
           : `Ignored ${index}`,
         parameters: index === 1
           ? { type: "array" }
@@ -76,7 +76,7 @@ describe("CodeBuddy capture-only tool choice", () => {
       }),
     );
 
-    const bridge = buildCodeBuddyToolBridge(parsed(ignored, "none"));
+    const bridge = buildCodingAgentToolBridge(parsed(ignored, "none"));
     expect(bridge.tools).toEqual([]);
     expect(bridge.emittedNameMap.size).toBe(0);
     expect(bridge.requireToolCall).toBe(false);
@@ -88,63 +88,63 @@ describe("CodeBuddy capture-only tool choice", () => {
       null as unknown as OcxTool,
       tool("invalid name"),
       tool("bad_description", {
-        description: "d".repeat(CODEBUDDY_TOOL_LIMITS.maxDescriptionBytes + 1),
+        description: "d".repeat(CODING_AGENT_TOOL_LIMITS.maxDescriptionBytes + 1),
       }),
       tool("bad_schema", { parameters: { type: "array" } }),
       ...Array.from(
-        { length: CODEBUDDY_TOOL_LIMITS.maxTools },
+        { length: CODING_AGENT_TOOL_LIMITS.maxTools },
         (_, index) => tool(`extra_${index}`),
       ),
     ];
 
-    const named = buildCodeBuddyToolBridge(parsed([selected, ...ignored], { name: "selected" }));
+    const named = buildCodingAgentToolBridge(parsed([selected, ...ignored], { name: "selected" }));
     expect([...named.emittedNameMap.values()]).toEqual(["selected"]);
     expect(named.requireToolCall).toBe(true);
 
-    const allowed = buildCodeBuddyToolBridge(parsed([selected, ...ignored], {
+    const allowed = buildCodingAgentToolBridge(parsed([selected, ...ignored], {
       allowedTools: ["selected"],
       mode: "auto",
     }));
     expect([...allowed.emittedNameMap.values()]).toEqual(["selected"]);
     expect(allowed.requireToolCall).toBe(false);
 
-    expect(() => buildCodeBuddyToolBridge(parsed([selected, ...ignored], {
+    expect(() => buildCodingAgentToolBridge(parsed([selected, ...ignored], {
       name: "bad_schema",
     }))).toThrow("invalid input schema");
   });
 
   test("supports named selectors including the unique bare namespaced shorthand", () => {
     for (const name of ["lookup", "mcp__alpha.lookup", "mcp__alpha__lookup"]) {
-      const bridge = buildCodeBuddyToolBridge(parsed(catalog, { name }));
+      const bridge = buildCodingAgentToolBridge(parsed(catalog, { name }));
       expect([...bridge.emittedNameMap.values()]).toEqual(["mcp__alpha__lookup"]);
       expect(bridge.requireToolCall).toBe(true);
     }
 
-    expect(() => buildCodeBuddyToolBridge(parsed(catalog, { name: "missing" })))
+    expect(() => buildCodingAgentToolBridge(parsed(catalog, { name: "missing" })))
       .toThrow("tool_choice requires a tool");
   });
 
   test("supports allowed_tools in auto and required modes", () => {
-    const automatic = buildCodeBuddyToolBridge(parsed(catalog, {
+    const automatic = buildCodingAgentToolBridge(parsed(catalog, {
       allowedTools: ["plain"],
       mode: "auto",
     }));
     expect([...automatic.emittedNameMap.values()]).toEqual(["plain"]);
     expect(automatic.requireToolCall).toBe(false);
 
-    const required = buildCodeBuddyToolBridge(parsed(catalog, {
+    const required = buildCodingAgentToolBridge(parsed(catalog, {
       allowedTools: ["lookup"],
       mode: "required",
     }));
     expect([...required.emittedNameMap.values()]).toEqual(["mcp__alpha__lookup"]);
     expect(required.requireToolCall).toBe(true);
 
-    const noMatch = buildCodeBuddyToolBridge(parsed(catalog, {
+    const noMatch = buildCodingAgentToolBridge(parsed(catalog, {
       allowedTools: ["missing"],
       mode: "auto",
     }));
     expect(noMatch.tools).toEqual([]);
-    expect(() => buildCodeBuddyToolBridge(parsed(catalog, {
+    expect(() => buildCodingAgentToolBridge(parsed(catalog, {
       allowedTools: ["missing"],
       mode: "required",
     }))).toThrow("tool_choice requires a tool");
@@ -159,7 +159,7 @@ describe("CodeBuddy capture-only tool choice", () => {
       allowedTools: ["lookup"],
       mode: "auto",
     }))).toEqual([]);
-    expect(() => buildCodeBuddyToolBridge(parsed(ambiguous, { name: "lookup" })))
+    expect(() => buildCodingAgentToolBridge(parsed(ambiguous, { name: "lookup" })))
       .toThrow("tool_choice requires a tool");
     expect(wireNames(parsed(ambiguous, { name: "mcp__beta.lookup" })))
       .toEqual(["mcp__beta__lookup"]);
@@ -169,7 +169,7 @@ describe("CodeBuddy capture-only tool choice", () => {
 describe("CodeBuddy tool aliases", () => {
   test("are deterministic, collision-safe, and reversibly mapped", () => {
     const unsafeWireName = "unsafe.name";
-    const firstHashedCandidate = codeBuddyToolAlias(unsafeWireName);
+    const firstHashedCandidate = codingAgentToolAlias(unsafeWireName);
     const catalog = [
       tool(unsafeWireName),
       tool(firstHashedCandidate),
@@ -186,13 +186,13 @@ describe("CodeBuddy tool aliases", () => {
 
     for (const [wireName, alias] of forward) {
       expect(alias).toMatch(/^[A-Za-z0-9_-]{1,40}$/);
-      const bridge = buildCodeBuddyToolBridge(parsed(catalog));
-      expect(bridge.emittedNameMap.get(`${CODEBUDDY_MCP_TOOL_PREFIX}${alias}`)).toBe(wireName);
+      const bridge = buildCodingAgentToolBridge(parsed(catalog));
+      expect(bridge.emittedNameMap.get(`${CODING_AGENT_MCP_TOOL_PREFIX}${alias}`)).toBe(wireName);
     }
   });
 
   test("rejects duplicate source wire names instead of inventing an ambiguous mapping", () => {
-    expect(() => buildCodeBuddyToolBridge(parsed([tool("same"), tool("same")])))
+    expect(() => buildCodingAgentToolBridge(parsed([tool("same"), tool("same")])))
       .toThrow("duplicate wire name");
   });
 });
@@ -242,7 +242,7 @@ describe("CodeBuddy JSON Schema boundary", () => {
       additionalProperties: false,
       encrypted: true,
     };
-    const bridge = buildCodeBuddyToolBridge(parsed([tool("complex", { parameters })]));
+    const bridge = buildCodingAgentToolBridge(parsed([tool("complex", { parameters })]));
     const schema = bridge.tools[0].inputSchema as typeof parameters;
 
     expect(schema.$defs).toEqual(parameters.$defs);
@@ -262,7 +262,7 @@ describe("CodeBuddy JSON Schema boundary", () => {
       properties: { value: { type: "integer", minimum: 0 } },
       required: ["value"],
     };
-    const schema = buildCodeBuddyToolBridge(parsed([tool("normalize", { parameters })]))
+    const schema = buildCodingAgentToolBridge(parsed([tool("normalize", { parameters })]))
       .tools[0].inputSchema;
     expect(schema).toEqual({ ...parameters, type: "object" });
     expect(Object.hasOwn(parameters, "type")).toBe(false);
@@ -277,7 +277,7 @@ describe("CodeBuddy JSON Schema boundary", () => {
     ["external reference", { type: "object", properties: { value: { $ref: "https://example.com/schema" } } }],
     ["non-JSON value", { type: "object", default: undefined }],
   ])("rejects %s schemas", (_label, parameters) => {
-    expect(() => buildCodeBuddyToolBridge(parsed([
+    expect(() => buildCodingAgentToolBridge(parsed([
       tool("invalid", { parameters: parameters as Record<string, unknown> }),
     ]))).toThrow("invalid input schema");
   });
@@ -285,7 +285,7 @@ describe("CodeBuddy JSON Schema boundary", () => {
   test("rejects cyclic and accessor-bearing schemas before serialization", () => {
     const cyclic: Record<string, unknown> = { type: "object" };
     cyclic.self = cyclic;
-    expect(() => buildCodeBuddyToolBridge(parsed([tool("cyclic", { parameters: cyclic })])))
+    expect(() => buildCodingAgentToolBridge(parsed([tool("cyclic", { parameters: cyclic })])))
       .toThrow(/invalid input schema.*cycles/);
 
     const accessor: Record<string, unknown> = { type: "object" };
@@ -293,13 +293,13 @@ describe("CodeBuddy JSON Schema boundary", () => {
       enumerable: true,
       get: () => ({ value: { type: "string" } }),
     });
-    expect(() => buildCodeBuddyToolBridge(parsed([tool("accessor", { parameters: accessor })])))
+    expect(() => buildCodingAgentToolBridge(parsed([tool("accessor", { parameters: accessor })])))
       .toThrow(/invalid input schema.*data properties/);
   });
 
   test("preserves prototype-shaped property names as inert data", () => {
     const properties = JSON.parse('{"__proto__":{"type":"string"},"constructor":{"type":"number"}}');
-    const schema = buildCodeBuddyToolBridge(parsed([
+    const schema = buildCodingAgentToolBridge(parsed([
       tool("prototype_names", { parameters: { type: "object", properties } }),
     ])).tools[0].inputSchema;
     const emitted = schema.properties as Record<string, unknown>;
@@ -312,49 +312,49 @@ describe("CodeBuddy JSON Schema boundary", () => {
 describe("CodeBuddy tool catalog limits", () => {
   test("bounds tool count, name bytes, and description bytes", () => {
     const tooMany = Array.from(
-      { length: CODEBUDDY_TOOL_LIMITS.maxTools + 1 },
+      { length: CODING_AGENT_TOOL_LIMITS.maxTools + 1 },
       (_, index) => tool(`tool_${index}`),
     );
-    expect(() => buildCodeBuddyToolBridge(parsed(tooMany))).toThrow("tool limit");
+    expect(() => buildCodingAgentToolBridge(parsed(tooMany))).toThrow("tool limit");
 
-    const oversizedName = "é".repeat(Math.floor(CODEBUDDY_TOOL_LIMITS.maxNameBytes / 2) + 1);
-    expect(() => buildCodeBuddyToolBridge(parsed([tool(oversizedName)]))).toThrow("name exceeds");
+    const oversizedName = "é".repeat(Math.floor(CODING_AGENT_TOOL_LIMITS.maxNameBytes / 2) + 1);
+    expect(() => buildCodingAgentToolBridge(parsed([tool(oversizedName)]))).toThrow("name exceeds");
 
-    const oversizedDescription = "d".repeat(CODEBUDDY_TOOL_LIMITS.maxDescriptionBytes + 1);
-    expect(() => buildCodeBuddyToolBridge(parsed([
+    const oversizedDescription = "d".repeat(CODING_AGENT_TOOL_LIMITS.maxDescriptionBytes + 1);
+    expect(() => buildCodingAgentToolBridge(parsed([
       tool("large_description", { description: oversizedDescription }),
     ]))).toThrow("description exceeds");
   });
 
   test("bounds schema depth and node count before JSON serialization", () => {
     let tooDeep: Record<string, unknown> = { type: "string" };
-    for (let depth = 0; depth <= CODEBUDDY_TOOL_LIMITS.maxSchemaDepth; depth++) {
+    for (let depth = 0; depth <= CODING_AGENT_TOOL_LIMITS.maxSchemaDepth; depth++) {
       tooDeep = { nested: tooDeep };
     }
-    expect(() => buildCodeBuddyToolBridge(parsed([
+    expect(() => buildCodingAgentToolBridge(parsed([
       tool("deep", { parameters: { type: "object", extension: tooDeep } }),
     ]))).toThrow(/invalid input schema.*too deep/);
 
     const tooManyNodes = Array.from(
-      { length: CODEBUDDY_TOOL_LIMITS.maxSchemaNodes },
+      { length: CODING_AGENT_TOOL_LIMITS.maxSchemaNodes },
       (_, index) => `value_${index}`,
     );
-    expect(() => buildCodeBuddyToolBridge(parsed([
+    expect(() => buildCodingAgentToolBridge(parsed([
       tool("nodes", { parameters: { type: "object", enum: tooManyNodes } }),
     ]))).toThrow(/invalid input schema.*node count/);
   });
 
   test("bounds schema, individual definition, and aggregate catalog bytes independently", () => {
-    expect(() => buildCodeBuddyToolBridge(parsed([
+    expect(() => buildCodingAgentToolBridge(parsed([
       tool("large_schema", {
         parameters: {
           type: "object",
-          $comment: "s".repeat(CODEBUDDY_TOOL_LIMITS.maxSchemaBytes),
+          $comment: "s".repeat(CODING_AGENT_TOOL_LIMITS.maxSchemaBytes),
         },
       }),
     ]))).toThrow(/invalid input schema.*schema exceeds/);
 
-    expect(() => buildCodeBuddyToolBridge(parsed([
+    expect(() => buildCodingAgentToolBridge(parsed([
       tool("large_definition", {
         description: "d".repeat(60 * 1024),
         parameters: { type: "object", $comment: "s".repeat(200 * 1024) },
@@ -365,6 +365,6 @@ describe("CodeBuddy tool catalog limits", () => {
       { length: 40 },
       (_, index) => tool(`aggregate_${index}`, { description: "d".repeat(55 * 1024) }),
     );
-    expect(() => buildCodeBuddyToolBridge(parsed(aggregate))).toThrow("catalog exceeds");
+    expect(() => buildCodingAgentToolBridge(parsed(aggregate))).toThrow("catalog exceeds");
   });
 });

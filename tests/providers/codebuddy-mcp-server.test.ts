@@ -5,8 +5,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
-import { CODEBUDDY_TOOL_LIMITS } from "../../src/adapters/codebuddy/tool-bridge";
-import { codeBuddyMcpInvocation } from "../../src/adapters/coding-agent/turn";
+import { CODING_AGENT_TOOL_LIMITS } from "../../src/adapters/coding-agent/tool-bridge";
+import { codingAgentMcpInvocation } from "../../src/adapters/coding-agent/turn";
 
 const tempDirs: string[] = [];
 const serverPath = join(
@@ -15,7 +15,7 @@ const serverPath = join(
   "..",
   "src",
   "adapters",
-  "codebuddy",
+  "coding-agent",
   "mcp-server.ts",
 );
 
@@ -74,14 +74,14 @@ describe("CodeBuddy capture-only MCP server", () => {
     expect(version.stdout.toString()).toContain("opencodex");
     const catalogPath = join(dir, "catalog.json");
     writeFileSync(catalogPath, JSON.stringify([definition("lookup")]), { mode: 0o600 });
-    const probe = Bun.spawn({ cmd: [binary, ...codeBuddyMcpInvocation(serverPath, catalogPath, true)], stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const probe = Bun.spawn({ cmd: [binary, ...codingAgentMcpInvocation(serverPath, catalogPath, true)], stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     probe.stdin.end();
     const probeError = await new Response(probe.stderr).text();
     const probeOutput = await new Response(probe.stdout).text();
     expect({ exit: await probe.exited, stderr: probeError, stdout: probeOutput }).toEqual({ exit: 0, stderr: "", stdout: "" });
     const transport = new StdioClientTransport({
       command: binary,
-      args: codeBuddyMcpInvocation(serverPath, catalogPath, true),
+      args: codingAgentMcpInvocation(serverPath, catalogPath, true),
       stderr: "pipe",
     });
     const client = new Client({ name: "compiled-codebuddy-test", version: "1.0.0" });
@@ -156,14 +156,14 @@ describe("CodeBuddy capture-only MCP server", () => {
 
   test("reads at most the catalog limit plus one byte", async () => {
     const stderr = await rejectedCatalog(
-      " ".repeat(CODEBUDDY_TOOL_LIMITS.maxCatalogBytes + 1),
+      " ".repeat(CODING_AGENT_TOOL_LIMITS.maxCatalogBytes + 1),
     );
     expect(stderr).toContain("tool catalog is too large");
   });
 
   test("revalidates count, unique names, text, and schema boundaries in the helper", async () => {
     let deeplyNested: Record<string, unknown> = { type: "object" };
-    for (let depth = 0; depth <= CODEBUDDY_TOOL_LIMITS.maxSchemaDepth; depth++) {
+    for (let depth = 0; depth <= CODING_AGENT_TOOL_LIMITS.maxSchemaDepth; depth++) {
       deeplyNested = { type: "object", nested: deeplyNested };
     }
 
@@ -171,7 +171,7 @@ describe("CodeBuddy capture-only MCP server", () => {
       {
         expected: "too many definitions",
         value: Array.from(
-          { length: CODEBUDDY_TOOL_LIMITS.maxTools + 1 },
+          { length: CODING_AGENT_TOOL_LIMITS.maxTools + 1 },
           (_, index) => definition(`tool_${index}`),
         ),
       },
@@ -186,7 +186,7 @@ describe("CodeBuddy capture-only MCP server", () => {
       {
         expected: "invalid definition",
         value: [definition("description", {
-          description: "d".repeat(CODEBUDDY_TOOL_LIMITS.maxDescriptionBytes + 1),
+          description: "d".repeat(CODING_AGENT_TOOL_LIMITS.maxDescriptionBytes + 1),
         })],
       },
       {

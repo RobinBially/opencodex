@@ -32,7 +32,8 @@ Some adapters share another adapter's routed-tool semantics while retaining inde
 - `mimo-free` inherits the `openai-chat` contract.
 - `claude-cli` inherits the `codebuddy` contract. Claude Code speaks the same stream-json
   protocol this repository already parses for CodeBuddy and Qoder, so the wire is inherited and the
-  family module (`src/adapters/claude-cli/`) supplies only its own arguments and child environment.
+  family module (`src/adapters/claude-cli/`) supplies only its own arguments, child environment and
+  MCP server path.
   That profile is the first credentialless one: it omits `tokenEnv`, the CLI reads the operator's
   own Claude Code sign-in, and the turn neither requires nor injects an API key. The proxy-safety
   controls are set per invocation, through CLI arguments and the child environment, and
@@ -40,6 +41,11 @@ Some adapters share another adapter's routed-tool semantics while retaining inde
   `--setting-sources ""`, `--no-session-persistence`, no permission bypass, a folded prompt staged
   in a 0600 per-turn file and passed as `--system-prompt-file` rather than as a world-readable
   argument, and a child environment that carries no inherited `ANTHROPIC_*` value.
+  A request that carries a tool catalog arms the shared capture-only bridge
+  (`src/adapters/coding-agent/tool-bridge.ts` and `mcp-server.ts`, the modules the CodeBuddy adapter
+  uses too): the family module contributes the server path, and the `--mcp-config`/`--allowedTools`
+  pair arrives from the shared turn. Built-in tools stay disabled either way, and a catalog the
+  bridge refuses fails the request with `tool_catalog_invalid`.
   Its registry row is `authKind: "key"` with `keyOptional: true`, NOT `local`: the turn leaves the
   machine for `api.anthropic.com`, and `local` (Ollama, vLLM, LM Studio) is the classification for
   traffic that never does. `keyOptional` is the existing exemption from key enforcement, and key

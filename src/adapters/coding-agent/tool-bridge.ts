@@ -1,3 +1,16 @@
+/**
+ * Capture-only tool bridge for the official coding-agent CLIs.
+ *
+ * The nested CLI never executes a tool. This module turns the request's tool catalog into MCP
+ * definitions the CLI can advertise, renames them into the `mcp__<server>__<tool>` shape the
+ * harness renders, and maps captured calls back to the request's wire names. `turn.ts` stages the
+ * catalog and the MCP config, `mcp-server.ts` serves the capture-only stdio server, and the parent
+ * adapter ends the leg at `message_stop` — approval, sandboxing and execution stay with the client.
+ *
+ * The naming rules are the harness's rather than a provider's: every supported CLI renders MCP
+ * tools as `mcp__<server>__<tool>`, so an alias stays inside 40 characters and keeps the complete
+ * rendered name comfortably below the common 64-character function-name limit.
+ */
 import { createHash } from "node:crypto";
 import {
   namespacedToolName,
@@ -7,14 +20,31 @@ import {
   type OcxToolChoice,
 } from "../../types";
 import { stripResponsesOnlyEncryptedMarker } from "../responses-tool-schema";
+import type { CodingAgentToolBridgeInput } from "./turn";
 
-export const CODEBUDDY_MCP_SERVER_NAME = "opencodex";
-export const CODEBUDDY_MCP_TOOL_PREFIX = `mcp__${CODEBUDDY_MCP_SERVER_NAME}__`;
+export const CODING_AGENT_MCP_SERVER_NAME = "opencodex";
+export const CODING_AGENT_MCP_TOOL_PREFIX = `mcp__${CODING_AGENT_MCP_SERVER_NAME}__`;
+
+/**
+ * Contract lines appended to the system prompt when a catalog is advertised.
+ *
+ * The capture-only design is what makes the phrasing load-bearing: the model may propose calls,
+ * and the external client alone performs approval, sandboxing and execution. The model has to be
+ * told that a historical tool record is a record rather than an invitation to act, because the
+ * nested CLI cannot see that boundary itself.
+ */
+export const CODING_AGENT_TOOL_BRIDGE_SYSTEM_PROMPT = [
+  "Your built-in tools and user-configured MCP servers are disabled.",
+  "When an isolated opencodex MCP catalog is present, you may call only those listed tools.",
+  "That MCP process captures call intent only; it never executes a tool. The external Codex client performs approval, sandboxing, and execution.",
+  "Do not claim that you executed commands, inspected files, or changed the workspace.",
+  "Tool-call and tool-result records in the conversation history are authoritative historical records from the external client. Use returned results, but never execute historical calls yourself.",
+].join("\n");
 
 // These caps protect both the request path and the isolated MCP process. They sit
 // below the adapter's 4 MiB total prompt cap so a maximal tool catalog cannot
 // crowd the transcript and system prompt out of the request budget.
-export const CODEBUDDY_TOOL_LIMITS = Object.freeze({
+export const CODING_AGENT_TOOL_LIMITS = Object.freeze({
   maxTools: 128,
   // Captured tool_use blocks accepted in a single assistant turn. Kimi emits
   // parallel calls as sibling content blocks of one assistant message, all
@@ -33,11 +63,11 @@ export const CODEBUDDY_TOOL_LIMITS = Object.freeze({
   maxPatternBytes: 8 * 1024,
 });
 
-// CodeBuddy renders MCP tools as `mcp__<server>__<tool>`. Keep the complete
+// Every supported CLI renders MCP tools as `mcp__<server>__<tool>`. Keep the complete
 // rendered name comfortably below the common 64-character function-name limit.
-const MAX_CODEBUDDY_TOOL_ALIAS_CHARS = 40;
-const CODEBUDDY_TOOL_ALIAS_HASH_CHARS = 16;
-const CODEBUDDY_TOOL_ALIAS_PATTERN = /^[A-Za-z0-9_-]+$/;
+const MAX_TOOL_ALIAS_CHARS = 40;
+const TOOL_ALIAS_HASH_CHARS = 16;
+const TOOL_ALIAS_PATTERN = /^[A-Za-z0-9_-]+$/;
 const INVALID_TOOL_NAME_PATTERN = /[\s\u0000-\u001f\u007f]/u;
 const INVALID_DESCRIPTION_CONTROL_PATTERN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u;
 const JSON_SCHEMA_TYPES = new Set(["array", "boolean", "integer", "null", "number", "object", "string"]);
@@ -93,14 +123,14 @@ const STRING_KEYWORDS = [
 const BOOLEAN_KEYWORDS = ["deprecated", "nullable", "readOnly", "uniqueItems", "writeOnly"] as const;
 const textEncoder = new TextEncoder();
 
-export interface CodeBuddyMcpToolDefinition {
+export interface CodingAgentMcpToolDefinition {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
 }
 
-export interface CodeBuddyToolBridge {
-  tools: CodeBuddyMcpToolDefinition[];
+export interface CodingAgentToolBridge {
+  tools: CodingAgentMcpToolDefinition[];
   /** Exact nested-CLI-emitted MCP name -> Responses wire name. */
   emittedNameMap: Map<string, string>;
   requireToolCall: boolean;
@@ -166,9 +196,9 @@ function invalidJson(reason: string): never {
  * is fixed rather than attacker-controlled.
  */
 function cloneBoundedJson(value: unknown, depth: number, state: JsonCloneState): unknown {
-  if (depth > CODEBUDDY_TOOL_LIMITS.maxSchemaDepth) invalidJson("nesting is too deep");
+  if (depth > CODING_AGENT_TOOL_LIMITS.maxSchemaDepth) invalidJson("nesting is too deep");
   state.nodes += 1;
-  if (state.nodes > CODEBUDDY_TOOL_LIMITS.maxSchemaNodes) invalidJson("node count is too large");
+  if (state.nodes > CODING_AGENT_TOOL_LIMITS.maxSchemaNodes) invalidJson("node count is too large");
 
   if (value === null || typeof value === "boolean" || typeof value === "string") {
     if (typeof value === "string" && hasUnpairedSurrogate(value)) invalidJson("text contains an unpaired surrogate");
@@ -186,7 +216,7 @@ function cloneBoundedJson(value: unknown, depth: number, state: JsonCloneState):
   try {
     if (Array.isArray(value)) {
       if (Object.getPrototypeOf(value) !== Array.prototype) invalidJson("arrays must use the built-in prototype");
-      if (value.length > CODEBUDDY_TOOL_LIMITS.maxSchemaNodes) invalidJson("array length is too large");
+      if (value.length > CODING_AGENT_TOOL_LIMITS.maxSchemaNodes) invalidJson("array length is too large");
 
       const keys = Reflect.ownKeys(value);
       for (const key of keys) {
@@ -259,7 +289,7 @@ function validateSchemaMap(value: unknown, keyword: string, validatePatterns = f
 }
 
 function validatePattern(value: unknown, keyword = "pattern"): void {
-  if (typeof value !== "string" || utf8Bytes(value) > CODEBUDDY_TOOL_LIMITS.maxPatternBytes) {
+  if (typeof value !== "string" || utf8Bytes(value) > CODING_AGENT_TOOL_LIMITS.maxPatternBytes) {
     invalidSchema(`${keyword} must be a bounded regular-expression string`);
   }
   try {
@@ -404,8 +434,8 @@ function normalizeInputSchema(parameters: unknown): Record<string, unknown> {
   if (!isRecord(parameters)) invalidSchema("the root must be an object schema");
   const cloned = cloneBoundedJson(parameters, 0, { active: new WeakSet(), nodes: 0 });
   if (!isRecord(cloned)) invalidSchema("the root must be an object schema");
-  if (serializedBytes(cloned) > CODEBUDDY_TOOL_LIMITS.maxSchemaBytes) {
-    throw new Error(`schema exceeds ${CODEBUDDY_TOOL_LIMITS.maxSchemaBytes} bytes`);
+  if (serializedBytes(cloned) > CODING_AGENT_TOOL_LIMITS.maxSchemaBytes) {
+    throw new Error(`schema exceeds ${CODING_AGENT_TOOL_LIMITS.maxSchemaBytes} bytes`);
   }
   validateSchema(cloned);
   if (Object.hasOwn(cloned, "type") && cloned.type !== "object") {
@@ -415,8 +445,8 @@ function normalizeInputSchema(parameters: unknown): Record<string, unknown> {
   const stripped = stripResponsesOnlyEncryptedMarker(cloned);
   if (!isRecord(stripped)) invalidSchema("the root must remain an object schema");
   if (!Object.hasOwn(stripped, "type")) stripped.type = "object";
-  if (serializedBytes(stripped) > CODEBUDDY_TOOL_LIMITS.maxSchemaBytes) {
-    throw new Error(`schema exceeds ${CODEBUDDY_TOOL_LIMITS.maxSchemaBytes} bytes`);
+  if (serializedBytes(stripped) > CODING_AGENT_TOOL_LIMITS.maxSchemaBytes) {
+    throw new Error(`schema exceeds ${CODING_AGENT_TOOL_LIMITS.maxSchemaBytes} bytes`);
   }
   return stripped;
 }
@@ -425,12 +455,12 @@ function shortHash(value: string, salt = 0): string {
   return createHash("sha256")
     .update(salt === 0 ? value : `${value}\0${salt}`)
     .digest("hex")
-    .slice(0, CODEBUDDY_TOOL_ALIAS_HASH_CHARS);
+    .slice(0, TOOL_ALIAS_HASH_CHARS);
 }
 
-function directCodeBuddyAlias(wireName: string): string | undefined {
-  return CODEBUDDY_TOOL_ALIAS_PATTERN.test(wireName)
-    && wireName.length <= MAX_CODEBUDDY_TOOL_ALIAS_CHARS
+function directToolAlias(wireName: string): string | undefined {
+  return TOOL_ALIAS_PATTERN.test(wireName)
+    && wireName.length <= MAX_TOOL_ALIAS_CHARS
     ? wireName
     : undefined;
 }
@@ -439,39 +469,39 @@ function directCodeBuddyAlias(wireName: string): string | undefined {
  * Produce a deterministic MCP-safe alias while retaining a readable prefix.
  * `used` closes both normalization and truncated-hash collision domains.
  */
-export function codeBuddyToolAlias(wireName: string, used = new Set<string>()): string {
-  const direct = directCodeBuddyAlias(wireName);
+export function codingAgentToolAlias(wireName: string, used = new Set<string>()): string {
+  const direct = directToolAlias(wireName);
   if (direct && !used.has(direct)) {
     used.add(direct);
     return direct;
   }
 
   const cleaned = wireName.replace(/[^A-Za-z0-9_-]/g, "_");
-  const maxBaseChars = MAX_CODEBUDDY_TOOL_ALIAS_CHARS - CODEBUDDY_TOOL_ALIAS_HASH_CHARS - 1;
+  const maxBaseChars = MAX_TOOL_ALIAS_CHARS - TOOL_ALIAS_HASH_CHARS - 1;
   const base = (cleaned || "tool").slice(0, maxBaseChars);
-  for (let salt = 0; salt <= CODEBUDDY_TOOL_LIMITS.maxTools; salt++) {
+  for (let salt = 0; salt <= CODING_AGENT_TOOL_LIMITS.maxTools; salt++) {
     const candidate = `${base}_${shortHash(wireName, salt)}`;
     if (!used.has(candidate)) {
       used.add(candidate);
       return candidate;
     }
   }
-  throw new Error("CodeBuddy could not allocate a collision-free tool alias.");
+  throw new Error("The tool alias allocator could not find a collision-free name.");
 }
 
 /** Reserve direct names before hashing and sort the rest so request ordering cannot change aliases. */
-function codeBuddyToolAliases(wireNames: readonly string[]): Map<string, string> {
+function codingAgentToolAliases(wireNames: readonly string[]): Map<string, string> {
   const aliases = new Map<string, string>();
   const used = new Set<string>();
   for (const wireName of wireNames) {
-    const direct = directCodeBuddyAlias(wireName);
+    const direct = directToolAlias(wireName);
     if (direct) {
       aliases.set(wireName, direct);
       used.add(direct);
     }
   }
   const hashedNames = wireNames.filter(wireName => !aliases.has(wireName)).sort();
-  for (const wireName of hashedNames) aliases.set(wireName, codeBuddyToolAlias(wireName, used));
+  for (const wireName of hashedNames) aliases.set(wireName, codingAgentToolAlias(wireName, used));
   return aliases;
 }
 
@@ -490,28 +520,28 @@ function validateToolNamePart(value: unknown): value is string {
 }
 
 function prepareTool(tool: OcxTool, index: number, seenWireNames: Set<string>): PreparedTool {
-  if (!tool || typeof tool !== "object") throw new Error(`CodeBuddy tool ${index + 1} is not an object.`);
+  if (!tool || typeof tool !== "object") throw new Error(`Tool ${index + 1} is not an object.`);
   if (!validateToolNamePart(tool.name) || (
     tool.namespace !== undefined && !validateToolNamePart(tool.namespace)
   )) {
-    throw new Error(`CodeBuddy tool ${index + 1} has an invalid name or namespace.`);
+    throw new Error(`Tool ${index + 1} has an invalid name or namespace.`);
   }
   const wireName = namespacedToolName(tool.namespace, tool.name);
-  if (utf8Bytes(wireName) > CODEBUDDY_TOOL_LIMITS.maxNameBytes) {
-    throw new Error(`CodeBuddy tool ${index + 1} name exceeds ${CODEBUDDY_TOOL_LIMITS.maxNameBytes} bytes.`);
+  if (utf8Bytes(wireName) > CODING_AGENT_TOOL_LIMITS.maxNameBytes) {
+    throw new Error(`Tool ${index + 1} name exceeds ${CODING_AGENT_TOOL_LIMITS.maxNameBytes} bytes.`);
   }
   if (seenWireNames.has(wireName)) {
-    throw new Error(`CodeBuddy tool catalog contains a duplicate wire name: ${wireName}.`);
+    throw new Error(`The tool catalog contains a duplicate wire name: ${wireName}.`);
   }
   seenWireNames.add(wireName);
 
   if (typeof tool.description !== "string" || hasUnpairedSurrogate(tool.description)
     || INVALID_DESCRIPTION_CONTROL_PATTERN.test(tool.description)) {
-    throw new Error(`CodeBuddy tool ${index + 1} has an invalid description.`);
+    throw new Error(`Tool ${index + 1} has an invalid description.`);
   }
   const description = tool.description || `Tool: ${wireName}`;
-  if (utf8Bytes(description) > CODEBUDDY_TOOL_LIMITS.maxDescriptionBytes) {
-    throw new Error(`CodeBuddy tool ${index + 1} description exceeds ${CODEBUDDY_TOOL_LIMITS.maxDescriptionBytes} bytes.`);
+  if (utf8Bytes(description) > CODING_AGENT_TOOL_LIMITS.maxDescriptionBytes) {
+    throw new Error(`Tool ${index + 1} description exceeds ${CODING_AGENT_TOOL_LIMITS.maxDescriptionBytes} bytes.`);
   }
 
   let inputSchema: Record<string, unknown>;
@@ -519,14 +549,14 @@ function prepareTool(tool: OcxTool, index: number, seenWireNames: Set<string>): 
     inputSchema = normalizeInputSchema(tool.parameters ?? {});
   } catch (error) {
     const detail = error instanceof Error ? error.message : "unknown schema error";
-    throw new Error(`CodeBuddy tool ${index + 1} has an invalid input schema: ${detail}.`);
+    throw new Error(`Tool ${index + 1} has an invalid input schema: ${detail}.`);
   }
   return { source: tool, wireName, description, inputSchema };
 }
 
-function buildToolBridge(parsed: OcxParsedRequest): CodeBuddyToolBridge {
+function buildToolBridge(parsed: OcxParsedRequest): CodingAgentToolBridge {
   const allTools = parsed.context.tools ?? [];
-  if (!Array.isArray(allTools)) throw new Error("CodeBuddy tool catalog must be an array.");
+  if (!Array.isArray(allTools)) throw new Error("The tool catalog must be an array.");
 
   const choice = parsed.options.toolChoice;
   const requireToolCall = requiresToolCall(choice);
@@ -554,36 +584,36 @@ function buildToolBridge(parsed: OcxParsedRequest): CodeBuddyToolBridge {
     .map((tool, index) => ({ index, tool }))
     .filter(({ tool }) => allows(tool));
   if (requireToolCall && selected.length === 0) {
-    throw new Error("CodeBuddy tool_choice requires a tool, but no matching tool is available.");
+    throw new Error("tool_choice requires a tool, but no matching tool is available.");
   }
-  if (selected.length > CODEBUDDY_TOOL_LIMITS.maxTools) {
-    throw new Error(`CodeBuddy tool catalog exceeds the ${CODEBUDDY_TOOL_LIMITS.maxTools}-tool limit.`);
+  if (selected.length > CODING_AGENT_TOOL_LIMITS.maxTools) {
+    throw new Error(`The tool catalog exceeds the ${CODING_AGENT_TOOL_LIMITS.maxTools}-tool limit.`);
   }
 
   const seenWireNames = new Set<string>();
   const prepared = selected.map(({ index, tool }) => prepareTool(tool, index, seenWireNames));
-  const aliases = codeBuddyToolAliases(prepared.map(tool => tool.wireName));
-  const definitions = prepared.map((tool, index): CodeBuddyMcpToolDefinition => {
+  const aliases = codingAgentToolAliases(prepared.map(tool => tool.wireName));
+  const definitions = prepared.map((tool, index): CodingAgentMcpToolDefinition => {
     const definition = {
       name: aliases.get(tool.wireName)!,
       description: tool.description,
       inputSchema: tool.inputSchema,
     };
-    if (serializedBytes(definition) > CODEBUDDY_TOOL_LIMITS.maxToolBytes) {
-      throw new Error(`CodeBuddy tool ${index + 1} definition exceeds ${CODEBUDDY_TOOL_LIMITS.maxToolBytes} bytes.`);
+    if (serializedBytes(definition) > CODING_AGENT_TOOL_LIMITS.maxToolBytes) {
+      throw new Error(`Tool ${index + 1} definition exceeds ${CODING_AGENT_TOOL_LIMITS.maxToolBytes} bytes.`);
     }
     return definition;
   });
-  if (serializedBytes(definitions) > CODEBUDDY_TOOL_LIMITS.maxCatalogBytes) {
-    throw new Error(`CodeBuddy tool catalog exceeds ${CODEBUDDY_TOOL_LIMITS.maxCatalogBytes} bytes.`);
+  if (serializedBytes(definitions) > CODING_AGENT_TOOL_LIMITS.maxCatalogBytes) {
+    throw new Error(`The tool catalog exceeds ${CODING_AGENT_TOOL_LIMITS.maxCatalogBytes} bytes.`);
   }
 
   const emittedNameMap = new Map<string, string>();
   const tools = prepared.map((preparedTool, index) => {
     const definition = definitions[index];
-    const emittedName = `${CODEBUDDY_MCP_TOOL_PREFIX}${definition.name}`;
+    const emittedName = `${CODING_AGENT_MCP_TOOL_PREFIX}${definition.name}`;
     if (emittedNameMap.has(emittedName)) {
-      throw new Error("CodeBuddy tool catalog contains a colliding emitted alias.");
+      throw new Error("The tool catalog contains a colliding emitted alias.");
     }
     emittedNameMap.set(emittedName, preparedTool.wireName);
     return definition;
@@ -592,6 +622,28 @@ function buildToolBridge(parsed: OcxParsedRequest): CodeBuddyToolBridge {
   return { tools, emittedNameMap, requireToolCall };
 }
 
-export function buildCodeBuddyToolBridge(parsed: OcxParsedRequest): CodeBuddyToolBridge {
+export function buildCodingAgentToolBridge(parsed: OcxParsedRequest): CodingAgentToolBridge {
   return buildToolBridge(parsed);
+}
+
+/**
+ * Translate a built bridge into one turn's bridge input, or `undefined` when the request
+ * advertised no catalog — the shape every family adapter hands to `runCodingAgentTurn`.
+ *
+ * The family module contributes only its own MCP server path; the advertised name, the catalog and
+ * the per-turn call cap come from this shared module, so two adapters cannot drift apart on them.
+ */
+export function codingAgentToolBridgeInput(
+  bridge: CodingAgentToolBridge,
+  serverModulePath: string,
+): CodingAgentToolBridgeInput | undefined {
+  if (bridge.tools.length === 0) return undefined;
+  return {
+    serverName: CODING_AGENT_MCP_SERVER_NAME,
+    serverModulePath,
+    tools: bridge.tools,
+    emittedNameMap: bridge.emittedNameMap,
+    maxTurnToolCalls: CODING_AGENT_TOOL_LIMITS.maxTurnToolCalls,
+    requireToolCall: bridge.requireToolCall,
+  };
 }

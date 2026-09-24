@@ -1444,8 +1444,9 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     // path is Anthropic's own harness rather than a replayed Claude Code identity against the
     // Messages API. `baseUrl` is the destination the subscription's traffic reaches; OpenCodex
     // never sends it. Fails closed if the row's base URL is overridden.
-    // v1 runs tools-disabled (`--tools ""`, no `--mcp-config`) so the client keeps tool ownership:
-    // text/reasoning only until the shared capture-only tool bridge lands. Requires the CLI:
+    // The CLI always runs tools-disabled (`--tools ""`); a request that carries a tool catalog arms
+    // the shared capture-only MCP bridge (`src/adapters/coding-agent/tool-bridge.ts`), which lends
+    // the CLI exactly that catalog and returns captured calls to the client for execution. Requires:
     // `npm i -g @anthropic-ai/claude-code`, plus a signed-in session (`claude` -> /login).
     // GOVERNANCE: whether a subscription login may be driven through a proxy for a third-party
     // agent is Anthropic's call rather than OpenCodex's — flagged for maintainer review, as with
@@ -1486,6 +1487,6 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     reasoningEfforts: ANTHROPIC_REASONING_EFFORTS,
     modelReasoningEfforts: { ...ANTHROPIC_MODEL_REASONING_EFFORTS },
     defaultMaxOutputTokens: ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS,
-    note: "Runs Claude subscription traffic through Anthropic's own harness: the official Claude Code CLI headlessly (`claude -p`), one turn per request. OpenCodex stores no Claude token, reads none and injects none — the CLI signs in and bills the account itself, which is why this row is keyless and an API key saved here never reaches the harness (use `anthropic-apikey` for key billing). The sign-in is the one of the user this proxy runs as, so every request served through this row — by any client of this proxy — spends that same account; OpenCodex neither pools nor multiplexes Claude sign-ins. Requires the CLI (`npm i -g @anthropic-ai/claude-code`) and a signed-in session (`claude` -> /login). v1 disables CLI tools (--tools \"\", --strict-mcp-config) so the client retains tool ownership: text/reasoning only for now. Subscription routing authorization flagged for maintainer review.",
+  note: "Runs Claude subscription traffic through Anthropic's own harness: the official Claude Code CLI headlessly (`claude -p`), one turn per request. OpenCodex stores no Claude token, reads none and injects none — the CLI signs in and bills the account itself, which is why this row is keyless and an API key saved here never reaches the harness (use `anthropic-apikey` for key billing). The sign-in is the one of the user this proxy runs as, so every request served through this row — by any client of this proxy — spends that same account; OpenCodex neither pools nor multiplexes Claude sign-ins. Requires the CLI (`npm i -g @anthropic-ai/claude-code`) and a signed-in session (`claude` -> /login). The CLI always runs tools-disabled (--tools \"\"); a capture-only MCP bridge surfaces the request's Codex tool catalog as capturable calls, with approval and execution kept by the client. Subscription routing authorization flagged for maintainer review.",
   },
 ];

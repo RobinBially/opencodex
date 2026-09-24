@@ -1,10 +1,14 @@
 /**
- * Isolated MCP catalog used by the CodeBuddy adapter.
+ * Isolated MCP catalog shared by the coding-agent CLI adapters.
  *
  * This process advertises the current Codex tool schemas but deliberately never
- * executes a call. The parent adapter captures CodeBuddy's completed `tool_use`
+ * executes a call. The parent adapter captures the CLI's completed `tool_use`
  * frame, terminates this process tree, and returns the call to the Codex host,
  * where the normal approval and sandbox boundary remains authoritative.
+ *
+ * Both harnesses this repository drives were verified against the same contract:
+ * each reports the server as `connected` in its `system/init` frame and renders a
+ * call as `mcp__<server>__<tool>` (CodeBuddy Code; Claude Code 2.1.281).
  */
 
 import { open } from "node:fs/promises";
@@ -14,7 +18,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { CODEBUDDY_TOOL_LIMITS } from "./tool-bridge";
+import { CODING_AGENT_TOOL_LIMITS } from "./tool-bridge";
 
 interface ToolDefinition {
   name: string;
@@ -53,21 +57,21 @@ async function readCatalogBounded(path: string): Promise<Buffer> {
   try {
     const before = await handle.stat();
     if (!before.isFile()) throw new Error("tool catalog must be a regular file");
-    if (before.size > CODEBUDDY_TOOL_LIMITS.maxCatalogBytes) {
+    if (before.size > CODING_AGENT_TOOL_LIMITS.maxCatalogBytes) {
       throw new Error("tool catalog is too large");
     }
 
     // Read at most limit + 1 from the already-open descriptor. The extra byte
     // distinguishes an exact-limit file from a file that grew after fstat,
     // without ever allocating or retaining an attacker-sized input.
-    const bytes = Buffer.allocUnsafe(CODEBUDDY_TOOL_LIMITS.maxCatalogBytes + 1);
+    const bytes = Buffer.allocUnsafe(CODING_AGENT_TOOL_LIMITS.maxCatalogBytes + 1);
     let offset = 0;
     while (offset < bytes.length) {
       const result = await handle.read(bytes, offset, bytes.length - offset, offset);
       if (result.bytesRead === 0) break;
       offset += result.bytesRead;
     }
-    if (offset > CODEBUDDY_TOOL_LIMITS.maxCatalogBytes) {
+    if (offset > CODING_AGENT_TOOL_LIMITS.maxCatalogBytes) {
       throw new Error("tool catalog is too large");
     }
 
@@ -90,7 +94,7 @@ async function readCatalogBounded(path: string): Promise<Buffer> {
 
 function assertBoundedSchema(schema: Record<string, unknown>): void {
   if (schema.type !== "object") throw new Error("tool input schema must have object type");
-  if (utf8Bytes(JSON.stringify(schema)) > CODEBUDDY_TOOL_LIMITS.maxSchemaBytes) {
+  if (utf8Bytes(JSON.stringify(schema)) > CODING_AGENT_TOOL_LIMITS.maxSchemaBytes) {
     throw new Error("tool input schema is too large");
   }
 
@@ -99,10 +103,10 @@ function assertBoundedSchema(schema: Record<string, unknown>): void {
   while (pending.length > 0) {
     const current = pending.pop()!;
     nodes += 1;
-    if (nodes > CODEBUDDY_TOOL_LIMITS.maxSchemaNodes) {
+    if (nodes > CODING_AGENT_TOOL_LIMITS.maxSchemaNodes) {
       throw new Error("tool input schema has too many nodes");
     }
-    if (current.depth > CODEBUDDY_TOOL_LIMITS.maxSchemaDepth) {
+    if (current.depth > CODING_AGENT_TOOL_LIMITS.maxSchemaDepth) {
       throw new Error("tool input schema is too deeply nested");
     }
     if (Array.isArray(current.value)) {
@@ -119,7 +123,7 @@ async function loadTools(path: string): Promise<ToolDefinition[]> {
   const bytes = await readCatalogBounded(path);
   const parsed: unknown = JSON.parse(bytes.toString("utf8"));
   if (!Array.isArray(parsed)) throw new Error("tool catalog must be an array");
-  if (parsed.length > CODEBUDDY_TOOL_LIMITS.maxTools) {
+  if (parsed.length > CODING_AGENT_TOOL_LIMITS.maxTools) {
     throw new Error("tool catalog contains too many definitions");
   }
 
@@ -129,12 +133,12 @@ async function loadTools(path: string): Promise<ToolDefinition[]> {
       !isRecord(value)
       || typeof value.name !== "string"
       || !MCP_TOOL_NAME_PATTERN.test(value.name)
-      || utf8Bytes(value.name) > CODEBUDDY_TOOL_LIMITS.maxNameBytes
+      || utf8Bytes(value.name) > CODING_AGENT_TOOL_LIMITS.maxNameBytes
       || typeof value.description !== "string"
       || value.description.length < 1
       || hasUnpairedSurrogate(value.description)
       || INVALID_DESCRIPTION_CONTROL_PATTERN.test(value.description)
-      || utf8Bytes(value.description) > CODEBUDDY_TOOL_LIMITS.maxDescriptionBytes
+      || utf8Bytes(value.description) > CODING_AGENT_TOOL_LIMITS.maxDescriptionBytes
       || !isRecord(value.inputSchema)
     ) {
       throw new Error("tool catalog contains an invalid definition");
@@ -147,14 +151,14 @@ async function loadTools(path: string): Promise<ToolDefinition[]> {
       description: value.description,
       inputSchema: value.inputSchema,
     };
-    if (utf8Bytes(JSON.stringify(definition)) > CODEBUDDY_TOOL_LIMITS.maxToolBytes) {
+    if (utf8Bytes(JSON.stringify(definition)) > CODING_AGENT_TOOL_LIMITS.maxToolBytes) {
       throw new Error("tool catalog contains an oversized definition");
     }
     return definition;
   });
 }
 
-export async function runCodeBuddyMcpServer(catalogPath: string): Promise<void> {
+export async function runCodingAgentMcpServer(catalogPath: string): Promise<void> {
   if (!catalogPath) throw new Error("missing tool catalog");
   // The pinned SDK does not detect stdin EOF itself. The capture server must exit when
   // the parent terminates its CLI, including after a captured message_stop.
@@ -165,7 +169,7 @@ export async function runCodeBuddyMcpServer(catalogPath: string): Promise<void> 
   const tools = await loadTools(catalogPath);
   const advertisedNames = new Set(tools.map(tool => tool.name));
   const server = new Server(
-    { name: "opencodex-codebuddy-capture", version: "1.0.0" },
+    { name: "opencodex-capture", version: "1.0.0" },
     { capabilities: { tools: {} } },
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
@@ -177,4 +181,4 @@ export async function runCodeBuddyMcpServer(catalogPath: string): Promise<void> 
   await server.connect(new StdioServerTransport());
 }
 
-if (import.meta.main) await runCodeBuddyMcpServer(process.argv[2] ?? "");
+if (import.meta.main) await runCodingAgentMcpServer(process.argv[2] ?? "");

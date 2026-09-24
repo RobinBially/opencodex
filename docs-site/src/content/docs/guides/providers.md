@@ -951,15 +951,25 @@ CLI headlessly (`claude -p`, `stream-json`) once per turn:
   variable (a `claude` already pointed at this proxy therefore cannot loop back into it), telemetry,
   feedback and the auto-updater disabled, and `--tools ""`, `--strict-mcp-config` plus
   `--setting-sources ""`. The harness loads no CLAUDE.md, skill, hook, plugin or MCP server from the
-  machine and can neither read, write, exec nor browse. No session is persisted between turns.
+  machine and can neither read, write, exec nor browse; the one MCP server a turn can reach is the
+  bridge's own capture server, and only when the request advertises a catalog. No session is
+  persisted between turns.
 - **System prompt:** the caller's system and developer prompts replace the Claude Code preset
   (`--system-prompt-file`), so the turn answers the client's contract rather than the harness
   persona. The folded prompt is staged in a private per-turn file (mode `0600`) and passed by path,
   because process arguments are world-readable through process listing; a request that carries
   neither a system nor a developer prompt gets an empty file, which replaces the preset with nothing.
-- **Tool ownership:** v1 is text and reasoning only, exactly like the CodeBuddy and Qoder presets:
-  with no tool channel, approval, sandboxing and execution stay with the client. The shared
-  capture-only tool bridge is the documented follow-up.
+- **Tool Ownership and the Tool Bridge:** the CLI is always spawned with `--tools ""` and
+  `--strict-mcp-config`, so it has no built-in or user-configured tools of its own. When a request
+  carries a Codex tool catalog, the provider arms the same capture-only MCP bridge the CodeBuddy
+  presets use: the validated catalog and MCP config are written to a private temp dir, the CLI is
+  launched with `--mcp-config` and an exact `--allowedTools` list, and the `system/init` frame must
+  report exactly that bridge server as connected or the turn fails closed. The bridge advertises the
+  Codex tools and captures proposed calls but never executes anything: a completed tool-call batch is
+  returned to the client with the request's wire names (at most 16 calls per assistant message), the
+  process tree is terminated at `message_stop`, and approval, sandboxing and execution stay with the
+  external client. Tool results come back as the next request's input, and the conversation
+  continues. Requests without a catalog keep the plain text-and-reasoning shape.
 - **Destination:** the canonical row names `https://api.anthropic.com` because that is where the
   subscription's traffic lands. OpenCodex never sends that request itself, and overriding the base
   URL fails closed rather than handing the turn to another environment.

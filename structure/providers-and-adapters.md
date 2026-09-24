@@ -13,8 +13,9 @@ cancels unparsed authorization/mint failures, including mint429, without reflect
 The capture-only bridge in `src/adapters/coding-agent/turn.ts` reports staging failures with
 the fixed `tool_bridge_setup_failed` error, never an OS error carrying private file paths.
 Failure prevents CLI spawn and settles the bridge's private directory; the CodeBuddy adapter
-also settles its prompt-file directory. Catalog and MCP-config write failures cover both owners.
-In a compiled executable, the bridge launches the private `__codebuddy-mcp` CLI entrypoint;
+and the Claude Code adapter also settle their prompt-file directories. Catalog and MCP-config write
+failures cover both owners.
+In a compiled executable, the bridge launches the private `__coding-agent-mcp` CLI entrypoint;
 source execution launches the MCP module with Bun. Both paths advertise only the request's
 isolated catalog and leave tool execution to the external client. Qoder appends the folded
 system prompt through its documented scoped `QODER_APPEND_SYSTEM_PROMPT` or
