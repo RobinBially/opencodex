@@ -95,8 +95,13 @@ export function buildChildEnv(_profile: ClaudeCliProfile, _apiKey: string): Reco
  * `--no-session-persistence` keeps every turn stateless. The client replays its own conversation
  * and `buildConversationInput` projects it into the single stream-json user frame the CLI accepts.
  *
- * There is deliberately no `--max-turns` here: the Claude Code CLI exposes no such flag (the Agent
- * SDK sets it on the turn budget instead), and with no tool channel a single `-p` turn cannot loop.
+ * There is deliberately no `--max-turns` here. The CLI does carry one — "maximum number of agentic
+ * turns in non-interactive mode" — but it is hidden from `--help`, and a measured turn against a
+ * capture-only server does not end any earlier with it: 2.1.282 emitted a terminal `result` frame
+ * with `subtype: "error_max_turns"` and then held the process open behind the never-answering MCP
+ * child anyway. The leg is bounded where the turn actually ends, in `turn.ts`: without a catalog the
+ * single `-p` turn has no tool channel to loop in, and with one the adapter terminates the process
+ * tree at `message_stop` once the captured calls are complete.
  */
 export function buildArgs(
   _profile: ClaudeCliProfile,

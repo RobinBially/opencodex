@@ -163,9 +163,11 @@ describe("claude-cli headless arguments keep tool ownership with the client", ()
     expect(args[args.indexOf("--effort") + 1]).toBe("high");
   });
 
-  test("passes no --max-turns: the Claude Code CLI has no such flag", () => {
-    // CodeBuddy's CLI accepts --max-turns and this family shares its parser; the flag must not be
-    // copied across, or every turn dies on an unknown option.
+  test("passes no --max-turns: the capture leg is bounded by the message_stop termination", () => {
+    // The CLI does accept a hidden --max-turns (it is absent from --help), but a capture-only turn
+    // measured on 2.1.282 ended with `subtype: "error_max_turns"` and still held the process open.
+    // The bound is turn.ts terminating the tree at `message_stop`, so the family's CodeBuddy flag is
+    // not copied across on the strength of that name alone.
     expect(buildArgs(CLAUDE_CLI_PROFILE, parsed(), provider())).not.toContain("--max-turns");
   });
 });
